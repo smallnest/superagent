@@ -1,10 +1,24 @@
+/** How long a reply in a conversation may be: a person reads it on a phone, and the evidence belongs in the pull request. */
+const REPLY_MAX = 200
+
+/** The first sentence of a report summary, short enough to send; the record keeps every word. */
+export function deliverable(summary: string): string {
+  const one = summary.replace(/\s+/g, ' ').trim()
+  // A full stop, question or exclamation mark ends an English sentence only with a space after it, so "v1.2" and
+  // "README.md" stay whole.
+  // Chinese and Japanese sentences need no space after their mark, so those marks end a sentence on their own.
+  const sentence = one.split(/(?<=[.!?])\s|(?<=[\u3002\uff01\uff1f])/)[0] ?? ''
+  const text = (sentence || one).replace(/[\s.!?\u3002\uff01\uff1f]+$/, '')
+  return text.length > REPLY_MAX ? `${text.slice(0, REPLY_MAX - 1).trimEnd()}…` : text || 'The work is done.'
+}
+
 function deliver(engine: Engine, repo: FileRepositories, delivered: Set<string>, log: (line: string) => void): void {
   for (const ticket of repo.tickets.list()) {
     const report = latestReport(ticket)
     // A ready report ends its ticket, so the conversation that asked gets its answer once the ticket is no longer live.
     if (!ticket.ended || report?.state !== 'ready' || delivered.has(`${ticket.id}@${report.at}`)) continue
     delivered.add(`${ticket.id}@${report.at}`)
-    const text = String(report.summary).trim() || 'The work is done.'
+    const text = deliverable(String(report.summary))
     try {
       engine.reply({ purpose: 'result', ticketId: ticket.id, text })
       log(`Answered ticket ${ticket.id} in its conversation`)
