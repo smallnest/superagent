@@ -41,7 +41,8 @@
     "lib",
     "README.md",
     "SKILL.md",
-    "LICENSE"
+    "LICENSE",
+    "prompts"
   ],
   "repository": {
     "type": "git",

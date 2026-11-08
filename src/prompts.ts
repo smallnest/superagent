@@ -4,6 +4,9 @@
  * It is assembled here rather than read from files so that an installation has one thing to read: `settings.yaml`. The
  * team-editable part is `prompts.instructions`, which the operator writes in their own words.
  */
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Ticket, Trigger } from './core/index.ts'
 import { reportInstructions } from './agents/types.ts'
 
@@ -19,11 +22,26 @@ export interface PromptInput {
   source?: 'github' | 'feishu'
   /** The branch the worktree was created on, which the agent pushes instead of naming one itself. */
   branch?: string
+  /** The standing rules, from `standingRules`. */
+  standing?: string[]
+}
+
+/**
+ * The rules that hold for every ticket, one file each beside this one.
+ *
+ * They were files in the DSH bundle, where an operator edited them in the panel; here the text is part of the install,
+ * so it is read from the file next to the source rather than copied into this module.
+ */
+const STANDING_FILES = ['scope.md', 'delivery.md'] as const
+const STANDING_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts')
+
+export async function standingRules(): Promise<string[]> {
+  return Promise.all(STANDING_FILES.map(async name => (await readFile(join(STANDING_DIR, name), 'utf8')).trim()))
 }
 
 /** Composes the prompt for one ticket: who asked, what they asked, and what the agent must not assume. */
 export function composePrompt(input: PromptInput): string {
-  const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch } = input
+  const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch, standing = [] } = input
   const asked = trigger
     ? `A person wrote this in ${trigger.url ?? trigger.channel?.thread ?? 'the source conversation'}:\n\n${quote(trigger.text)}`
     : `The ticket has no source message; work on the title alone:\n\n${quote(ticket.title)}`
@@ -49,8 +67,8 @@ export function composePrompt(input: PromptInput): string {
     '- Run the tests the repository has. Do not claim a check passed unless you ran it.',
     '- Do not merge the pull request. A person merges it.',
     '- If the request needs a decision you cannot make, stop and ask one concrete question.',
-    '',
-    ...instructions.trim() ? ['## Team instructions', '', instructions.trim(), ''] : [],
+    ...standing.filter(Boolean).flatMap(rule => ['', rule]),
+    ...instructions.trim() ? ['', '## Team instructions', '', instructions.trim()] : [],
     reportInstructions(),
   ].join('\n')
 }

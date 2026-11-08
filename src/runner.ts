@@ -103,7 +103,7 @@ import { writeEnvironment, runEnvironment, type EnvironmentAccounts } from './in
 import { run } from './infra/commands.ts'
 import type { FileRepositories } from './state/files.ts'
 import type { Settings } from './settings.ts'
-import { composePrompt } from './prompts.ts'
+import { composePrompt, standingRules } from './prompts.ts'
 import { agentLogin, pollNotifications } from './sources/github.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
@@ -302,6 +302,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // Without a GitHub Source the shims point at nothing usable; every GitHub action then fails inside the run, which is right.
   const accounts = { stateDir: settings.stateDir, githubCli: github?.cli ?? 'gh', agentLogin: login } as EnvironmentAccounts
   await writeEnvironment(accounts, settings.executor.blockedCommands)
+  const standing = await standingRules()
 
   const channel = outbox() as Outbox & { drain: () => OutboundMessage[] }
   // Finished turns wait here for a round to record them, and wake the loop's idle wait so it happens at once.
@@ -327,7 +328,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
       const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
       return composePrompt({ ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
-        source, instructions: settings.prompts, branch })
+        source, instructions: settings.prompts, branch, standing })
     },
   })
   // `syncChat` copies a chat's members into the allow list each round, so a person joins by joining the chat. The list
