@@ -79,6 +79,11 @@ Arbitrary polling is not yet wired, so a person runs `poll` under cron or a syst
 */1 * * * * cd /path/to/install && superagent poll . --once >> state/poll.log 2>&1
 ```
 
+## Compare with dsh-superagent
+
+[`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md) compares this project with the earlier
+`dsh-superagent` DSH bundle: what both keep, what each does differently, and where this one is behind.
+
 ## Status
 
 Done and tested: the domain, file-backed state, the settings file, three agent runners (verified against the real CLIs),
