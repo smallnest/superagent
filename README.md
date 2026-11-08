@@ -81,8 +81,9 @@ Arbitrary polling is not yet wired, so a person runs `poll` under cron or a syst
 
 ## Compare with dsh-superagent
 
-[`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md) compares this project with the earlier
-`dsh-superagent` DSH bundle: what both keep, what each does differently, and where this one is behind.
+[`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md)（[中文版](docs/dsh-superagent-comparison.zh.md)）
+compares this project with the earlier `dsh-superagent` DSH bundle: what both keep, what each does differently, and where
+this one is behind.
 
 ## Status
 

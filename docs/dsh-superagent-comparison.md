@@ -2,7 +2,8 @@
 
 This document compares this project (`superagent`, the npm package `superagent-skill`) with `dsh-superagent`, the
 earlier research prototype in `/Users/smallnest/dsh-superagent`. It states what each project does today, and why they
-differ. The source of each claim is named, so a reader can check it.
+differ. The source of each claim is named, so a reader can check it. A Chinese version is in
+[`dsh-superagent-comparison.zh.md`](dsh-superagent-comparison.zh.md).
 
 ## Summary
 
