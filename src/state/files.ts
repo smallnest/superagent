@@ -236,9 +236,9 @@ export class FileRepositories implements Repositories {
 }
 
 /** Reads the state directory as plain files without opening it for writing, for a status command or an agent. */
-export async function readState(stateDir: string): Promise<{ tickets: Ticket[]; threads: Thread[]; exists: boolean }> {
-  try { await stat(stateDir) } catch { return { tickets: [], threads: [], exists: false } }
+export async function readState(stateDir: string): Promise<{ tickets: Ticket[]; threads: Thread[]; decisions: Decision[]; triggers: Trigger[]; exists: boolean }> {
+  try { await stat(stateDir) } catch { return { tickets: [], threads: [], decisions: [], triggers: [], exists: false } }
   const repo = new FileRepositories(stateDir)
   await repo.open()
-  return { tickets: repo.tickets.list(), threads: repo.threads.list(), exists: true }
+  return { tickets: repo.tickets.list(), threads: repo.threads.list(), decisions: repo.decisions.list(), triggers: repo.triggers.list(), exists: true }
 }

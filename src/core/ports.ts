@@ -17,7 +17,7 @@ export interface SourceScope {
 export interface Policy {
   version: string
   paused: boolean
-  gate(trigger: Trigger, thread: Thread, tickets: Ticket[]): GateResult
+  gate(trigger: Trigger, thread: Thread, tickets: Ticket[], received?: ScopeResult): GateResult
   /** Re-check a mandate's gate-layer basis under this policy, such as before an ended ticket resumes. */
   revalidate(mandate: Mandate): boolean
   /** Whether an inferred candidate may be accepted on the rules its assessment matched: assessments accept, and each rule is enabled. */

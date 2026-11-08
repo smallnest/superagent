@@ -93,7 +93,7 @@ export class Evals extends EnginePart {
     const reasons: Reason[] = []
     let strongest: { trigger: Trigger; strength: Strength; basis: MandateBasis } | undefined
     for (const trigger of triggers) {
-      const gate = policy.gate(trigger, thread, tickets)
+      const gate = policy.gate(trigger, thread, tickets, this.options.scope.scope(trigger))
       if (!gate.admissible) { reasons.push({ code: gate.reason, triggerId: trigger.id }); continue }
       const later = gate.strength === strongest?.strength && trigger.at >= strongest.trigger.at
       const weaker = !strongest || stronger(strongest.strength, gate.strength) !== strongest.strength
@@ -270,7 +270,7 @@ export class Evals extends EnginePart {
    */
   private directEval(thread: Thread, trigger: Trigger, kind: AssessmentOutcome['kind'], ticketId?: string): Evaluation {
     const policy = this.policy()
-    const gate = policy.gate(trigger, thread, this.ticketsOnThread(thread))
+    const gate = policy.gate(trigger, thread, this.ticketsOnThread(thread), this.options.scope.scope(trigger))
     if (!gate.admissible) throw new UserError('notAdmissible', { reason: gate.reason })
     const at = this.now()
     if (thread.pending.includes(trigger.id)) { thread.pending = thread.pending.filter(id => id !== trigger.id); this.repo.threads.save(thread) }

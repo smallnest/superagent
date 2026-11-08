@@ -28,36 +28,20 @@ function deliver(engine: Engine, repo: FileRepositories, delivered: Set<string>,
   }
 }
 
-/** Decides the requests the assessor accepted, which starts their tickets. */
-function advance(engine: Engine, repo: FileRepositories, log: (line: string) => void, candidates: Candidate[]): void {
-  for (const candidate of candidates) {
-    const trigger = repo.triggers.get(candidate.triggers[0]!.id)
-    if (!trigger) continue
-    const name = trigger.text.split('\n')[0]!.replace(/@[\w-]+/g, '').trim().slice(0, 60) || 'Request'
-    try {
-      const decision = engine.decide(trigger.id, { kind: 'accept', title: name, scope: name, reason: 'explicit' } as AssessmentOutcome)
-      log(`Accepted ${trigger.id} as ticket ${decision.ticketId ?? '(none)'}`)
-    } catch (error) {
-      log(`Could not accept ${trigger.id}: ${(error as Error).message}`)
-    }
-  }
-}
-
 /** The outcome of a finished agent turn, which a round records on the Engine. */
 type Finished = { ticketId: string; report: { state: string; summary: string; question?: string | null } }
 
-/** Holds the turns' outcomes until a round records them, and wakes that round when one arrives. */
-class TurnQueue {
-  private readonly items: Finished[] = []
-  handoff: ((item: Finished) => void) | undefined
+/** Holds outcomes that arrive while no round is listening, and wakes a round to record them. */
+class WorkQueue<T> {
+  private readonly items: T[] = []
   private waiter: (() => void) | undefined
-  /** A turn that finished; it is kept even with no round waiting, so a turn that outlives its round is still recorded. */
-  push(item: Finished): void { this.items.push(item); this.handoff?.(item); this.wake() }
-  /** The turns finished since the last drain. */
-  drain(): Finished[] { return this.items.splice(0) }
-  /** Whether a turn is waiting to be recorded. */
+  /** An outcome that arrived; it is kept even with no round waiting, so one that outlives its round is still recorded. */
+  push(item: T): void { this.items.push(item); this.wake() }
+  /** What arrived since the last drain. */
+  drain(): T[] { return this.items.splice(0) }
+  /** Whether an outcome waits to be recorded. */
   ready(): boolean { return this.items.length > 0 }
-  /** Settles when a turn has finished, or when `ms` passes. */
+  /** Settles when an outcome arrives, or when `ms` passes. */
   wait(ms: number): Promise<void> {
     if (this.items.length) return Promise.resolve()
     return new Promise<void>(resolve => {
@@ -69,8 +53,19 @@ class TurnQueue {
   private wake(): void { this.waiter?.() }
 }
 
-/** How long one round waits for a turn before the next round; a turn is recorded when it ends, not several rounds later. */
+/** How long one round waits for an outcome before the next round; one that arrives is recorded at once, not several rounds later. */
 const TURN_WAIT_MS = 1000
+
+/** Records the assessments that finished as Decisions; one the Engine refuses is logged, not thrown. */
+function decide(engine: Engine, decided: Decided[], log: (line: string) => void): void {
+  for (const { triggerId, outcome } of decided) {
+    try {
+      const made = engine.decide(triggerId, outcome)
+      log(`Decided ${triggerId}: ${made.kind}${made.ticketId ? `, ticket ${made.ticketId}` : ''}${made.reason?.length ? ` — ${JSON.stringify(made.reason)}` : ''}`)
+    } catch (error) { log(`Could not decide ${triggerId}: ${(error as Error).message}`) }
+  }
+}
+
 /** Records the turns that finished, so a ticket ends without the loop holding work in memory; a refused report is logged, not thrown. */
 function record(engine: Engine, repo: FileRepositories, finished: Finished[], log: (line: string) => void): void {
   for (const item of finished) {
@@ -110,65 +105,24 @@ async function send(channel: Outbox & { drain: () => OutboundMessage[] }, clis: 
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Engine, type AssessmentOutcome, type Candidate, type Executor, type Outbox, type OutboundMessage, type Policy, type Assessor, type SourceScope,
-  type Ticket, type Trigger, type Assignment, latestReport, liveTicket } from './core/index.ts'
+import { Engine, type Executor, type Outbox, type OutboundMessage, type Ticket, type Trigger, type Assignment, latestReport } from './core/index.ts'
 import { runnerFor, type AgentName, type AgentReport, type AgentRunner } from './agents/index.ts'
 import { writeEnvironment, runEnvironment, type EnvironmentAccounts } from './infra/environment.ts'
 import { run } from './infra/commands.ts'
 import type { FileRepositories } from './state/files.ts'
 import type { Settings } from './settings.ts'
 import { composePrompt, standingRules } from './prompts.ts'
+import { buildPolicy, sourceScope } from './policy.ts'
+import { claudeAssessor } from './assess.ts'
+import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications } from './sources/github.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
-import { sameName } from './infra/text.ts'
 
 /** Where the loop keeps its own bookkeeping, beside the domain state. */
 const pollKey = 'github:poll'
 const seenKey = (id: string) => `github:seen:${id}`
 
-/** A Source Scope that listens to the configured repository's threads. */
-function sourceScope(settings: Settings): SourceScope {
-  return {
-    scope: input => {
-      if (input.source === 'feishu') return settings.feishu?.enabled ? { listened: true, observed: false } : { listened: false, reason: 'sourceOff' }
-      if (input.source !== 'github') return { listened: false, reason: 'unsupported' }
-      if (!settings.github?.enabled) return { listened: false, reason: 'sourceOff' }
-      const repository = (input.meta.repository as string | undefined) ?? settings.github.repository
-      if (!repository) return { listened: false, reason: 'unsupported' }
-      if (!sameName(repository, settings.github.repository)) return { listened: false, reason: 'otherRepository' }
-      return { listened: true, observed: false }
-    },
-  }
-}
-
-/** A Policy that admits a person on the allow list who addressed the agent, and nothing else. */
-function buildPolicy(settings: Settings): Policy {
-  // Each Source has its own list: a GitHub login and a Feishu open id never match, and one list would admit neither.
-  const allowed = new Set((settings.github?.allowed ?? []).map(name => name.toLowerCase()))
-  const people = new Set((settings.feishu?.allowed ?? []).map(id => id.toLowerCase()))
-  const version = `${allowed.size}.${people.size}`
-  return {
-    version,
-    paused: false,
-    gate: trigger => {
-      if (!trigger.human) return { admissible: false, reason: 'bot' }
-      if (!(trigger.source === 'feishu' ? people : allowed).has(trigger.actor.id.toLowerCase())) return { admissible: false, reason: 'notAllowed' }
-      if (!trigger.addressed) return { admissible: false, reason: 'notAddressed' }
-      return { admissible: true, strength: 'explicit', basis: { via: 'listed', addressed: 'mention' } }
-    },
-    // The list an accept leaned on is the one that still has to hold; the Mandate names its actor's Source.
-    revalidate: mandate => mandate.basis.via !== 'bot' && (mandate.actor.source === 'feishu' ? people : allowed).has(mandate.actor.id.toLowerCase()),
-    admitsInferred: () => false,
-    evalTimeoutMs: 120_000,
-  } as Policy
-}
-
-/** Marks a request accepted without a model call: an explicit mention by an allowed person is its own authorization. */
-const explicitAssessor: Assessor = { request: candidate => { accepted.push(candidate) }, release: () => {} }
-const accepted: Candidate[] = []
-/** How long a round waits for the event stream to connect before it starts without it. */
-const STREAM_CONNECT_MS = 3000
 /** Lines one round reads from the stream at most, so a chat that keeps talking does not hold a round open. */
 const MAX_LINES = 500
 
@@ -319,25 +273,33 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const standing = await standingRules()
 
   const channel = outbox() as Outbox & { drain: () => OutboundMessage[] }
+  const scope = sourceScope(settings)
   // Finished turns wait here for a round to record them, and wake the loop's idle wait so it happens at once.
-  const finished = new TurnQueue()
-
+  const decided = new WorkQueue<Decided>()
+  const finished = new WorkQueue<Finished>()
   const engine = new Engine({
     repo,
-    policy: () => buildPolicy(settings),
-    scope: sourceScope(settings),
-    assessor: explicitAssessor,
+    policy: () => buildPolicy(settings, scope),
+    scope,
+    assessor: assessing({ settings: () => settings, next: claudeAssessor(settings), decided, log }),
     executor: undefined as unknown as Executor,
     outbox: channel,
   })
+  // Handed as a value: after the optional `...feishu ? {...} : {}` spread, an argument list that follows continues the
+  // spread's sequence expression, so an object literal there lands only in the spread's true branch. A reported turn is
+  // recorded here, as well as by the round: a turn lasts several rounds of a one-round-at-a-time loop, and the round that
+  // hears of it may never reach its own record step.
+  const site = {
+    started: (ticketId: string, assignmentId: string) => engine.assignmentStarted(ticketId, assignmentId),
+    reported: (ticketId: string, report: { state: string; summary: string; question?: string | null }) => {
+      record(engine, repo, [{ ticketId, report }], log)
+    },
+    failed: (ticketId: string, _assignmentId: string, summary: string) => finished.push({ ticketId, report: { state: 'failed', summary } }),
+  }
   const executor = new AgentExecutor({
     engine, settings, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
     repository: github?.repository ?? settings.checkout, agent: login, accounts, ...feishu ? { feishuCli: feishu.cli } : {},
-    site: {
-      started: (ticketId, assignmentId) => engine.assignmentStarted(ticketId, assignmentId),
-      reported: (ticketId, report) => finished.push({ ticketId, report }),
-      failed: (ticketId, _assignmentId, summary) => finished.push({ ticketId, report: { state: 'failed', summary } }),
-    },
+    site,
     prompt: async (ticket, directory, branch) => {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
       const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
@@ -375,8 +337,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const store = (trigger: Trigger): void => {
     // Stored at once rather than in a round, so a message that arrives while a round waits for its interval is not lost.
     try {
-      const cur = options.repo
-          const result = repo.atomic(() => engine.receive(trigger))
+      const result = repo.atomic(() => engine.receive(trigger))
       // A round flushes the disk itself; flushing here while a round reads would rewrite this file after the message was
       // taken, and the next round would read it as a new one.
       if (result !== 'duplicate') log(`Received ${trigger.id} from ${trigger.actor.id} on ${trigger.threads[0]!.id}`)
@@ -391,16 +352,15 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // A consumer runs for the whole round loop, not for one round: Feishu pushes a message to the stream, and a stream that
   // stops and starts between rounds drops what is sent while it is down. The rounds read what it stored between their steps.
   let handle: StreamHandle | undefined
+  // A run in one process, such as a round on demand, starts its stream again while the process lives; one that ends with the
+  // round also ends its stream, or the process that started it never exits.
   const stopListening = new AbortController()
-  const unlisten = (): void => { stopListening.abort() }
-  const endStream = async (): Promise<void> => {
-    unlisten()
-    if (handle) await handle.ended
-  }
+  if (options.once) caller.addEventListener('abort', () => stopListening.abort(), { once: true })
   if (feishu) {
     handle = consumeEvents({ cli: feishu.cli, signal: stopListening.signal,
       onMessage: receive,
       onListening: (started) => { handle = started },
+      ...options.once ? {} : { onEnded: () => stopListening.abort() },
       // A consumer that could not start is a warning for the log; one that ends with an error is a line in the log, and the
       // next round starts another.
       onError: message => { if (!signal.aborted) log(message) },
@@ -413,9 +373,6 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // here. A turn that finished while no round is listening is also recorded from here: a turn lasts several rounds of a
   // loop that runs one round at a time, and the round that hears of it may never reach its own record step.
   ;(engine as unknown as { options: { executor: Executor } }).options.executor = executor
-  finished.handoff = item => {
-    try { record(engine, repo, [item], log) } catch (error) { log(`Could not record the report for ${item.ticketId}: ${(error as Error).message}`) }
-  }
 
   // Triggers a round has taken: they stay on disk as history, and the Engine's memory keeps that they were taken.
   const inRound = new Set<string>()
@@ -460,9 +417,9 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         since = round
         repo.setMeta(pollKey, since)
       }
-      // The Engine queues an Eval per new thread; running it hands the candidate to the assessor, which accepts it.
+      // The Engine queues an Eval per new thread; running it hands an unaddressed candidate to the assessor.
       engine.evaluateDue()
-      advance(engine, repo, log, accepted.splice(0))
+      decide(engine, decided.drain(), log)
       record(engine, repo, finished.drain(), log)
       // A line that arrives while an agent runs is stored by its handler, so `flush` writes it with the round.
       await repo.flush()
@@ -481,18 +438,23 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     // A turn that ends during the wait is recorded by the next round, which starts at once instead of at the interval;
     // a GitHub Source with a longer interval waits in the same way, and the Source's own timer adds nothing to it.
     const seconds = Math.min(github?.pollSeconds ?? Infinity, feishu ? 15 : Infinity)
-    let left = seconds * 1000
+    // Only a loop that runs for long waits between rounds; one round on demand ends here, so its timeout has nothing to wake.
+    let left = options.once ? 0 : seconds * 1000
     while (left > 0 && !signal.aborted) {
       const began = Date.now()
-      await Promise.race([finished.wait(Math.max(1, Math.min(TURN_WAIT_MS, left))),
+      const wait = Math.max(1, Math.min(TURN_WAIT_MS, left))
+      await Promise.race([Promise.race([finished.wait(wait), decided.wait(wait)]),
         new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))])
       // A turn woke the wait: the round it woke starts now, and the Sources are read as early as they can be.
-      if (finished.ready()) break
+      if (finished.ready() || decided.ready()) break
       left -= Date.now() - began
     }
   }
-  // The stream stops with the rounds, and on its own signal: the caller's aborts the whole run, and the consumer ends in
-  // its own time, so the process that started it can exit after its last round.
+  // The stream starts with the first round, and a stream that ended starts again with the next one, so it lives past a round
+  // on demand: a consumer the last round stops loses what Feishu pushes until another round starts. It ends with the whole
+  // run, in its own time so the process that started it can exit after its last round.
   stop.abort()
-  if (feishu) await endStream()
+  // A process that ran one round leaves nothing behind: a consumer or the agent's shim a round started holds the event
+  // loop open until it ends, and one whose removal needs an event-loop turn ends on the next one, from the top-level check.
+  if (options.once) setImmediate(() => process.exit(process.exitCode ?? 0))
 }

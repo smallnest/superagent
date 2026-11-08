@@ -112,6 +112,9 @@ executor:
   agent: codex
   binary: ${join(bin, 'fake-agent')}
   timeoutMinutes: 5
+# The message addresses the bot, so no assessment runs; a stand-in that fails would only make the round wait.
+assess:
+  binary: ${join(bin, 'no-assessor')}
 `)
     await fakes(bin, stateDir)
     execFileSync('git', ['init', '-q', root])

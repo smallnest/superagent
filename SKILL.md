@@ -81,6 +81,27 @@ feishu:
 The agent acts only as the accounts those CLIs are signed in to. Never point `cli` at a personal login: everything the
 agent writes would appear under that person's name.
 
+### Messages that do not address the agent
+
+A message in a chat the bot reads that names no one is assessed, once per message, by one `claude -p` call that prints
+a verdict. Turn this on in `settings.yaml`:
+
+```yaml
+policy:
+  mode: observe        # off, observe, or auto
+  rules:
+    - id: unasked      # the rule that says the message asks for work at all
+      name: Request
+      instruction: The discussion asks for a concrete change to this project.
+    - id: docs
+      name: Documentation
+      instruction: The change is to a document in the repository.
+```
+
+`observe` records what `auto` would accept and starts nothing; `auto` accepts the candidates the assessor matches. The
+`unasked` rule is required for an unaddressed message to start work. `superagent status` lists the recent
+judgements under "Unaddressed messages". Keep `observe` until the judgements read right.
+
 ## Rules to keep
 
 - **Start narrow.** One repository, one chat, one allowed login. Widen after the agent's work looks right.
@@ -92,7 +113,7 @@ agent writes would appear under that person's name.
 | Command | Does |
 | --- | --- |
 | `superagent init [dir]` | create `settings.yaml` and the state directory; a second run keeps both |
-| `superagent status [dir]` | print open and ended tickets as Markdown |
+| `superagent status [dir]` | print open and ended tickets, and the recent judgements of unaddressed messages, as Markdown |
 | `superagent doctor [dir]` | show installed agents and the selected one |
 | `superagent agents` | list the agent names a configuration may use |
 | `superagent run [dir] -p <text>` | run one prompt on the configured agent and print its report |

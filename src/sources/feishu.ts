@@ -180,6 +180,8 @@ export function consumeEvents(options: {
   onError: (message: string) => void
   /** Called once the consumer has started; it prints nothing until a message arrives, so this is the sign it is listening. */
   onListening?: (handle: StreamHandle) => void
+  /** Called once the consumer has ended, with or without an error, so a run that holds it can start another. */
+  onEnded?: () => void
 }): StreamHandle {
   const failed = (line: string): void => { options.onError(`Unreadable event: ${line.slice(0, 200)}`) }
   let linesRead = 0
@@ -233,6 +235,7 @@ export function consumeEvents(options: {
     settled()
   })
   child.on('close', code => {
+    options.onEnded?.()
     if (!finished) {
       // The lines it printed are stored by their handlers first; `next` still answers true for the last of them.
       reader.flush()

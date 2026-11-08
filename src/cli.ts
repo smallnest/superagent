@@ -10,6 +10,7 @@ import { mkdir, stat } from 'node:fs/promises'
 import { AGENT_NAMES, installed, reportInstructions, runnerFor, type AgentName } from './agents/index.ts'
 import { readState, FileRepositories } from './state/files.ts'
 import { runLoop } from './runner.ts'
+import { reasonText } from './core/index.ts'
 import { defaultSettings, readSettings, SETTINGS_FILE, writeSettings } from './settings.ts'
 
 const USAGE = `superagent — an agent that turns GitHub and Feishu requests into tickets
@@ -58,7 +59,8 @@ async function init(dir: string): Promise<number> {
 }
 
 async function status(dir: string): Promise<number> {
-  const { tickets, threads, exists: found } = await readState(await stateDirOf(dir))
+  const { tickets, threads, decisions, triggers: all, exists: found } = await readState(await stateDirOf(dir))
+  const triggers = new Map(all.map(trigger => [trigger.id, trigger]))
   if (!found) {
     process.stdout.write(`No state directory yet. Run \`superagent init\` first.\n`)
     return 1
@@ -82,6 +84,18 @@ async function status(dir: string): Promise<number> {
     lines.push('')
   }
   if (!tickets.length) lines.push('No tickets yet.', '')
+  // An unaddressed message is assessed in every mode; `observe` records what `auto` would accept here, so a person can
+  // read the judgements before any of them starts work.
+  const judged = decisions.filter(decision => decision.strength === 'inferred').sort((a, b) => a.at.localeCompare(b.at)).slice(-10)
+  if (judged.length) {
+    lines.push('## Unaddressed messages', '')
+    for (const decision of judged) {
+      const message = decision.triggerIds.map(id => triggers.get(id)?.text ?? '').join(' ')
+      const what = decision.ticketId ? `ticket \`${decision.ticketId}\`` : decision.kind
+      lines.push(`- ${decision.at} **${what}** — ${reasonText(decision.reason)}${message ? ` — “${message.replace(/\s+/g, ' ').slice(0, 80)}”` : ''}`)
+    }
+    lines.push('')
+  }
   process.stdout.write(lines.join('\n'))
   return 0
 }
@@ -123,7 +137,7 @@ async function runOne(dir: string, prompt: string): Promise<number> {
 async function poll(dir: string, once: boolean): Promise<number> {
   let settings
   try { settings = await readSettings(join(dir, SETTINGS_FILE)) } catch (error) { process.stderr.write(`${(error as Error).message}\n`); return 1 }
-  const repo = new FileRepositories(settings.stateDir = settings.stateDir)
+  const repo = new FileRepositories(settings.stateDir)
   await repo.open()
   const controller = new AbortController()
   process.on('SIGINT', () => controller.abort())

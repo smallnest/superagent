@@ -69,6 +69,10 @@ A round reads the agent account's GitHub notifications, keeps the ones for `gith
 `github.allowed`, builds a Trigger for each mention, and accepts it as a ticket. The ticket runs on
 `executor.agent`; its report is written under `stateDir/work/<ticket>/.superagent/log.md`.
 
+A message in a chat the bot reads that names no one is assessed by one `claude -p` call per message, against the
+`policy.rules` in `settings.yaml`. In `observe` mode the verdict is recorded and no ticket starts; `auto` accepts the
+ones the assessor matches. `superagent status` lists the recent judgements.
+
 Arbitrary polling is not yet wired, so a person runs `poll` under cron or a systemd timer:
 
 ```cron

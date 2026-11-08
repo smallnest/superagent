@@ -29,6 +29,22 @@ const ExecutorSchema = z.object({
   blockedCommands: z.array(z.string()).default([]),
 })
 
+const RuleSchema = z.object({
+  /** The id an assessment names; `unasked` is reserved for the verdict that a message asks for work at all. */
+  id: z.string().regex(/^[a-z][a-z0-9_-]{0,79}$/, 'lowercase letters, digits, _ and -'),
+  name: z.string().min(1),
+  enabled: z.boolean().default(true),
+  /** What kind of work the rule admits, in the words the assessor reads. */
+  instruction: z.string().min(1),
+})
+
+/** Proactive work: whether an unaddressed message of the owner may become a ticket, and the rules that bound it. */
+const PolicySchema = z.object({
+  /** `off` never assesses an unaddressed message, `observe` records what it would accept, `auto` accepts it. */
+  mode: z.enum(['off', 'observe', 'auto']).default('observe'),
+  rules: z.array(RuleSchema).default([]),
+})
+
 export const SettingsSchema = z.object({
   /** Where tickets, triggers and logs live, as an absolute path. */
   stateDir: z.string().min(1),
@@ -57,6 +73,13 @@ export const SettingsSchema = z.object({
     syncChat: z.string().optional(),
   }).optional(),
   executor: ExecutorSchema.optional().transform(value => ExecutorSchema.parse(value ?? {})),
+  policy: PolicySchema.optional().transform(value => PolicySchema.parse(value ?? {})),
+  /** Who assesses a candidate and with what: the `claude` CLI, or a runner named here. */
+  assess: z.object({
+    agent: z.enum(AGENT_NAMES as [string, ...string[]]).default('claude'),
+    binary: z.string().optional(),
+    model: z.string().optional(),
+  }).optional().transform(value => ({ agent: 'claude', ...value } as { agent: string; binary?: string; model?: string })),
   /** Branch names the agent pushes, as a prefix followed by the ticket's short name. */
   branchPrefix: z.string().default('agent/'),
   /** The operator's own instructions, appended to every ticket's prompt in their words. */

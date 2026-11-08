@@ -54,6 +54,8 @@ describe('a poll round', () => {
       checkout: root,
       github: { enabled: true, repository: 'acme/widgets', cli: join(bin, 'gh'), allowed: ['alice'], pollSeconds: 60 },
       executor: { agent: 'codex', binary: agentBinary(bin), maxWorkers: 1, timeoutMinutes: 5, prepare: '', blockedCommands: [] },
+      // A mention is an explicit request, so it needs no assessment; a stand-in that fails would only make the round wait.
+      assess: { binary: join(bin, 'no-assessor') },
       prompts: '',
     })
     const repo = new FileRepositories(settings.stateDir)
@@ -97,6 +99,7 @@ describe('a poll round', () => {
       stateDir: join(root, 'state'), checkout: root,
       github: { enabled: true, repository: 'acme/widgets', cli: join(bin, 'gh'), allowed: ['bob'], pollSeconds: 60 },
       executor: { agent: 'codex', binary: agentBinary(bin) },
+      assess: { binary: join(bin, 'no-assessor') },
     })
     const repo = new FileRepositories(settings.stateDir)
     await repo.open()
@@ -114,6 +117,7 @@ describe('a poll round', () => {
       stateDir: join(root, 'state'), checkout: root,
       github: { enabled: true, repository: 'acme/widgets', cli: join(bin, 'gh'), allowed: ['alice'], pollSeconds: 60 },
       executor: { agent: 'codex', binary: agentBinary(bin) },
+      assess: { binary: join(bin, 'no-assessor') },
     })
     const repo = new FileRepositories(settings.stateDir)
     await repo.open()

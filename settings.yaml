@@ -23,6 +23,19 @@ feishu:
   syncChat: oc_70fa3aaf77da312916dc221c9dc31eb3
   directMessages: true
 
+# Proactive work: a message in a chat the bot reads that does not name it is
+# assessed once per message, and `observe` records what `auto` would accept
+# without starting a ticket. Run `superagent log` to read those decisions.
+policy:
+  mode: observe
+  rules:
+    - id: unasked
+      name: Request
+      instruction: The discussion asks for a concrete change to this project, at a target or an existing standard.
+    - id: docs
+      name: Documentation
+      instruction: The change is to a document in the repository, such as a README, a guide, or a comment.
+
 executor:
   agent: claude
   streamIdleMs: 300

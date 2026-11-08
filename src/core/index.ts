@@ -8,3 +8,5 @@ export { REASONS, reasonText, said, type Reason, type ReasonCode } from './reaso
 export { MemoryRepositories } from './memory.ts'
 export { canRetry, ticketStage, type TicketStage } from './stage.ts'
 export { key } from './ids.ts'
+export { RuleAssessmentSchema, RuleMatchSchema, AdmissionDirectionSchema, directionAllowed, type Assessment, type RuleAssessment, type RuleMatch, type AdmissionDirection }
+  from './policy.ts'
