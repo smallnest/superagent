@@ -103,9 +103,9 @@ async function send(channel: Outbox & { drain: () => OutboundMessage[] }, clis: 
   }
 }
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Engine, type Executor, type Outbox, type OutboundMessage, type Ticket, type Trigger, type Assignment, latestReport } from './core/index.ts'
+import { Engine, type Executor, type Outbox, type OutboundMessage, type Ticket, type Trigger, type Assignment, latestReport, runningAssignment } from './core/index.ts'
 import { runnerFor, type AgentName, type AgentReport, type AgentRunner } from './agents/index.ts'
 import { writeEnvironment, runEnvironment, type EnvironmentAccounts } from './infra/environment.ts'
 import { run } from './infra/commands.ts'
@@ -146,6 +146,9 @@ function outbox(): Outbox {
  */
 class AgentExecutor implements Executor {
   private readonly active = new Map<string, AbortController>()
+  /** Tickets whose turn waits for a free slot, oldest first. */
+  private readonly pending: { ticket: Ticket; assignment: Assignment }[] = []
+  private pumping = false
   constructor(private readonly options: {
     settings: Settings
     runner: AgentRunner
@@ -156,25 +159,40 @@ class AgentExecutor implements Executor {
     /** The Feishu CLI that acts as the bot, when the Feishu Source is on; its shim goes into the agent's environment. */
     feishuCli?: string
     engine: Engine
+    /** How many tickets may run at once; the others wait in `pending` and start as a turn ends. */
+    maxWorkers: number
     site: { started(ticketId: string, assignmentId: string): void; reported(ticketId: string, report: { state: string; summary: string; question?: string | null }): void
-      failed(ticketId: string, assignmentId: string, summary: string): void }
+      failed(ticketId: string, assignmentId: string, summary: string): void; interrupted(ticketId: string, assignmentId: string): void }
     prompt: (ticket: Ticket, directory: string, branch?: string) => Promise<string>
   }) {}
 
   start(ticket: Ticket, assignment: Assignment): void {
-    const controller = new AbortController()
-    // The start is the fact the round records; recording it inside the start keeps the running state from R1 from
-    // outliving the start in the order R2 reads it, because the engine's memory is the last word a round sees.
+    // The ticket is marked running now, so a round records the start before any turn of it exists; the turn itself waits
+    // for a free slot, so a burst of accepted messages does not start more agents than the operator allows.
     const { site } = this.options
     site.started(ticket.id, assignment.id)
-    this.active.set(ticket.id, controller)
-    // The turn begins after the current round: the round records "started" first, so the report then lands on the running
-    // assignment instead of on one the Engine has not been told about yet.
-    void this.execute(ticket, assignment, controller)
+    this.pending.push({ ticket, assignment })
+    this.pump()
   }
 
   deliver(): void {
     // A ticket runs one turn at a time; a message that arrives mid-turn is read at the next start.
+  }
+
+  /**
+   * Takes in the tickets a previous process left running. Their agents ended with that process, so a turn that had not
+   * reported is restarted with a recovery note, and one whose report a person still has to act on goes back to the queue
+   * with its inputs. A start from `interrupted` joins the same queue as a new ticket.
+   */
+  recover(open: readonly Ticket[]): void {
+    for (const ticket of open) {
+      const assignment = runningAssignment(ticket)
+      if (assignment) this.options.site.interrupted(ticket.id, assignment.id)
+    }
+    for (const ticket of open) {
+      for (const assignment of ticket.assignments) if (assignment.state === 'pending') this.pending.push({ ticket, assignment })
+    }
+    this.pump()
   }
 
   /** The Engine's memory of the ticket, so the report lands on a ticket that already holds this round's changes to it. */
@@ -183,6 +201,27 @@ class AgentExecutor implements Executor {
   stop(ticket: Ticket): void {
     this.active.get(ticket.id)?.abort()
     this.active.delete(ticket.id)
+    const waiting = this.pending.findIndex(item => item.ticket.id === ticket.id)
+    if (waiting >= 0) this.pending.splice(waiting, 1)
+    this.pump()
+  }
+
+  /** Starts waiting tickets while a slot is free; the turns run beside the rounds, so this never blocks on one. */
+  private pump(): void {
+    if (this.pumping) return
+    this.pumping = true
+    // Each turn begins on a later tick: `start` and `report` run inside an Engine transaction, and a turn that read the
+    // ticket there would miss what the transaction writes at its end.
+    void Promise.resolve().then(() => {
+      this.pumping = false
+      // The reservation is taken before the turn begins, so the next `pump` sees the slot as used.
+      while (this.active.size < this.options.maxWorkers && this.pending.length) {
+        const item = this.pending.shift()!
+        const controller = new AbortController()
+        this.active.set(item.ticket.id, controller)
+        void this.execute(item.ticket, item.assignment, controller)
+      }
+    })
   }
 
   private async execute(ticket: Ticket, assignment: Assignment, controller: AbortController): Promise<void> {
@@ -207,7 +246,11 @@ class AgentExecutor implements Executor {
       site.reported(ticket.id, { state: report.state ?? (result.ok ? 'ready' : 'failed'), summary: report.summary, question: report.question ?? null })
     } catch (error) {
       site.failed(ticket.id, assignment.id, `The agent could not run: ${(error as Error).message}`)
-    } finally { this.active.delete(ticket.id) }
+    } finally {
+      this.active.delete(ticket.id)
+      // The free slot goes to the next waiting ticket; a report that arrived with the turn is finished and must not start it.
+      this.pump()
+    }
   }
 
   private variables(ticket: Ticket, directory: string, branch: string): Record<string, string> {
@@ -235,9 +278,11 @@ function inferReport(text: string, ok: boolean): AgentReport {
 
 async function appendLog(directory: string, prompt: string, raw: string, report: AgentReport): Promise<void> {
   const path = join(directory, '.superagent', 'log.md')
-  const entry = ['', `## ${new Date().toISOString()}`, '', '**Report**', '', '```json', JSON.stringify(report, null, 2), '```', '', '**Agent output**', '', '```', raw, '```'].join('\n')
-  const previous = await readFile(path, 'utf8').catch(() => '')
-  await mkdir(join(directory, '.superagent'), { recursive: true }).then(() => writeFile(path, `${previous}${entry}\n`))
+  const entry = ['', `## ${new Date().toISOString()}`, '', '**Prompt**', '', '```', prompt, '```', '', '**Report**', '', '```json', JSON.stringify(report, null, 2), '```',
+    '', '**Agent output**', '', '```', raw, '```'].join('\n')
+  // `appendFile` rather than a read and a rewrite: a stream can end several turns of one ticket at once, and each turn must
+  // keep its entry.
+  await mkdir(join(directory, '.superagent'), { recursive: true }).then(() => appendFile(path, `${entry}\n`))
 }
 
 export interface LoopOptions {
@@ -294,17 +339,24 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     reported: (ticketId: string, report: { state: string; summary: string; question?: string | null }) => {
       record(engine, repo, [{ ticketId, report }], log)
     },
-    failed: (ticketId: string, _assignmentId: string, summary: string) => finished.push({ ticketId, report: { state: 'failed', summary } }),
+    failed: (ticketId: string, _assignmentId: string, summary: string) => {
+      record(engine, repo, [{ ticketId, report: { state: 'failed', summary } }], log)
+    },
+    interrupted: (ticketId: string, assignmentId: string) => {
+      try { engine.assignmentInterrupted(ticketId, assignmentId) } catch (error) { log(`Could not recover ${ticketId}: ${(error as Error).message}`) }
+    },
   }
   const executor = new AgentExecutor({
-    engine, settings, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
+    engine, settings, maxWorkers: settings.executor.maxWorkers, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
     repository: github?.repository ?? settings.checkout, agent: login, accounts, ...feishu ? { feishuCli: feishu.cli } : {},
     site,
     prompt: async (ticket, directory, branch) => {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
       const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
+      // A text input is a note the Engine carries, such as a recovery note after a restart; a fresh turn has not read it.
+      const notes = ticket.inputs.flatMap(input => input.kind === 'text' ? [input.text] : [])
       return composePrompt({ ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
-        source, instructions: settings.prompts, branch, standing })
+        source, instructions: settings.prompts, branch, standing, notes })
     },
   })
   // `syncChat` copies a chat's members into the allow list each round, so a person joins by joining the chat. The list
@@ -374,6 +426,12 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // loop that runs one round at a time, and the round that hears of it may never reach its own record step.
   ;(engine as unknown as { options: { executor: Executor } }).options.executor = executor
 
+  // A ticket a previous process left running has no agent behind it: its turn ended with that process. Recovery reads the
+  // disk, before a round takes the Engine's memory as the latest word, and starts the tickets again within the limit.
+  try {
+    for (const ticket of repo.tickets.active()) engine.updateTicket(ticket)
+    executor.recover(repo.tickets.active())
+  } catch (error) { log(`Could not recover the tickets left running: ${(error as Error).message}`) }
   // Triggers a round has taken: they stay on disk as history, and the Engine's memory keeps that they were taken.
   const inRound = new Set<string>()
   // Rounds read the state from disk, so a message stored by the stream has to be moved into the Engine's memory first.
@@ -456,5 +514,6 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   stop.abort()
   // A process that ran one round leaves nothing behind: a consumer or the agent's shim a round started holds the event
   // loop open until it ends, and one whose removal needs an event-loop turn ends on the next one, from the top-level check.
-  if (options.once) setImmediate(() => process.exit(process.exitCode ?? 0))
+  // A test embeds this loop in its own process and ends it when the test ends, so it leaves the exit to the caller.
+  if (options.once && !process.env.VITEST) setImmediate(() => process.exit(process.exitCode ?? 0))
 }

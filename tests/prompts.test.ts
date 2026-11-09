@@ -26,6 +26,14 @@ describe('the prompt for a ticket', () => {
   it('leaves the instructions out when there are none', () => {
     expect(compose([])).not.toContain('## Team instructions')
   })
+
+  it('carries a note the Engine recorded, as quoted material, before the rules of work', () => {
+    const text = composePrompt({ ticket: { id: 't1', title: 'Fix the heading' } as never, trigger: undefined, repository: 'alice/widget',
+      agentLogin: 'agent', branchPrefix: 'agent/', instructions: '', notes: ['The host restarted during this ticket. Inspect the worktree first.'] })
+    expect(text).toContain('## Notes since the start')
+    expect(text).toContain('> The host restarted during this ticket.')
+    expect(text.indexOf('## Notes since the start')).toBeLessThan(text.indexOf('## How to work'))
+  })
 })
 
 describe('the reply a person receives', () => {

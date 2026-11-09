@@ -24,6 +24,8 @@ export interface PromptInput {
   branch?: string
   /** The standing rules, from `standingRules`. */
   standing?: string[]
+  /** Notes a person was sent, such as a recovery note after a restart, which a fresh turn has not read in a session. */
+  notes?: string[]
 }
 
 /**
@@ -41,7 +43,7 @@ export async function standingRules(): Promise<string[]> {
 
 /** Composes the prompt for one ticket: who asked, what they asked, and what the agent must not assume. */
 export function composePrompt(input: PromptInput): string {
-  const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch, standing = [] } = input
+  const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch, standing = [], notes = [] } = input
   const asked = trigger
     ? `A person wrote this in ${trigger.url ?? trigger.channel?.thread ?? 'the source conversation'}:\n\n${quote(trigger.text)}`
     : `The ticket has no source message; work on the title alone:\n\n${quote(ticket.title)}`
@@ -57,6 +59,7 @@ export function composePrompt(input: PromptInput): string {
     '## The request',
     '',
     asked,
+    ...notes.filter(Boolean).flatMap(note => ['', '## Notes since the start', '', quote(note)]),
     '',
     '## How to work',
     '',

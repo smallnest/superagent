@@ -87,7 +87,7 @@ DSH 分两个角色，是因为主会话要用很多工具做判断，worker 在
 | 工作目录 | 每张 ticket 一个目录，在 `<stateDir>/work/<name>`，由你提供 `prepare` 命令，比如 `git worktree add` | 每张 ticket 一个 git worktree，在 `<stateDir>/work/<ticketId>`，分支名由标题生成，代码自己创建 |
 | 隔离 | 以你的系统用户身份运行，`danger-full-access`；文档建议另开一个系统账户 | 以你的用户身份运行，带 `worker-bin` 里的 `gh` 和 `lark-cli` 包装脚本、可选的 `blockedCommands` 禁用列表和预备好的 git 配置 |
 | 单轮上限 | 一轮结束后后台任务最多再跑 30 分钟 | `executor.timeoutMinutes`，默认 60 |
-| 并发 | `executor.maxWorkers`，默认 3，另给人发的消息留一个位置 | 设置里有 `maxWorkers`，但循环目前不限制同时启动的数量 |
+| 并发 | `executor.maxWorkers`，默认 3，另给人发的消息留一个位置 | `executor.maxWorkers`，默认 1；超出上限的 ticket 排队，等某一轮结束后再启动 |
 | 回报 | `progress`、`waiting`、`ready`、`blocked`、`failed`、`dropped`，PR 通过工具绑定 | `ready`、`blocked`、`failed`，写在 `.superagent/report.json`；完整日志在 `.superagent/log.md` |
 | 提问 | 用结构化的 `human_action`，由主会话以 `attention` 回复转达 | `blocked` 回报里带 `question` 字段 |
 | 停止与重试 | 面板操作，或人说一句停止；重试是在同一会话、目录、分支和 PR 上新建 Assignment | Engine 里有 `stopTicket` 和 `retryTicket`，CLI 还没开放 |
@@ -108,7 +108,7 @@ DSH 分两个角色，是因为主会话要用很多工具做判断，worker 在
 | --- | --- | --- |
 | 存储 | 一个 SQLite 文件，`<stateDir>/orchestrator.sqlite`，带目录锁和持久化的副作用队列 | `stateDir/` 下一个对象一个 JSON 文件，写临时文件再重命名，事务内提交 |
 | 手工查看 | 不借助查询工具很难看 | `ls` 和 `cat` 就能回答“现在有什么在跑” |
-| 重启 | 正在跑的 Assignment 记为“host restarted”，按最旧的 ticket 优先重启，并附恢复说明；会话保留 | 每轮从磁盘重新读状态。Engine 有 `assignmentInterrupted`，但循环还没调用它 |
+| 重启 | 正在跑的 Assignment 记为“host restarted”，按最旧的 ticket 优先重启，并附恢复说明；会话保留 | 启动时，循环把上次遗留的正在运行的 Assignment 标为中断，并带上恢复说明重新启动；agent 是独立进程，所以这一轮从头开始 |
 | 保留策略 | 数据行从不删除，表会一直增长 | 文件留着，直到人去删 |
 
 ## 运维体验
@@ -127,8 +127,7 @@ DSH 分两个角色，是因为主会话要用很多工具做判断，worker 在
 - **后续消息与 handback**：worker 不能把消息交回去重新判定。
 - **面板与管理 API**：没有界面，没有管理 API，也没有按组件的健康记录。
 - **命令行重试与停止**：Engine 里有，命令还没开放。
-- **中断恢复**：循环不会在重启后恢复正在跑的 Assignment。进程结束后，那一轮工作就结束了。
-- **并发上限**：`maxWorkers` 没有生效。
+- **会话**：重启后这一轮从头开始。编码 agent CLI 没有可恢复的会话，恢复说明会让它先查看 worktree 和 git 历史。
 - **GitHub PR 与 CI 跟踪**：agent 会开 PR，但循环不跟踪 PR 的检查结果。
 
 ## 本项目更简单的地方

@@ -91,7 +91,7 @@ survived the move: scope and delivery.
 | Workspace | A per-ticket directory from `<stateDir>/work/<name>`; the operator supplies a `prepare` command, such as `git worktree add` | A git worktree per ticket at `<stateDir>/work/<ticketId>`, on a branch named from the title. The code creates it |
 | Isolation | The operator's OS user, `danger-full-access`; the docs say to use a separate OS account | The operator's user, with `worker-bin` shims for `gh` and `lark-cli`, an optional `blockedCommands` list, and a prepared git config |
 | Turn cap | 30 min per turn after the turn ends, with background jobs | `executor.timeoutMinutes` (default 60) |
-| Concurrency | `executor.maxWorkers` (default 3), plus a slot for people | `executor.maxWorkers` is in the settings schema but the loop does not limit starts yet |
+| Concurrency | `executor.maxWorkers` (default 3), plus a slot for people | `executor.maxWorkers` (default 1); the tickets over the limit wait and start as a turn ends |
 | Reports | `progress`, `waiting`, `ready`, `blocked`, `failed`, `dropped`; PRs bind with a tool | `ready`, `blocked`, `failed`, in `.superagent/report.json`; a turn log goes to `.superagent/log.md` |
 | Questions | A structured `human_action`, relayed as an `attention` reply | A `question` field on a `blocked` report |
 | Stop and retry | Panel or a person's message; retry runs a new Assignment in the same Session | `stopTicket` and `retryTicket` exist in the Engine; the CLI does not expose them yet |
@@ -112,7 +112,7 @@ survived the move: scope and delivery.
 | --- | --- | --- |
 | Store | One SQLite file, `<stateDir>/orchestrator.sqlite`, with a directory lock and a durable effect queue | One JSON file per object under `stateDir/`, written with a temporary file and a rename, in transactions |
 | Read by hand | Not practical without a query tool | `ls` and `cat` answer "what is open" |
-| Restart | Running Assignments end as "host restarted" and restart oldest first with a recovery note; Sessions survive | The loop reads the state from disk on each round. `assignmentInterrupted` exists; the loop does not call it yet |
+| Restart | Running Assignments end as "host restarted" and restart oldest first with a recovery note; Sessions survive | On start, the loop marks each assignment left running as interrupted and restarts it with a recovery note in its prompt; the turn starts over, since the agent runs as a process |
 | Retention | Rows are never deleted; tables grow without bound | Files stay until a person removes them |
 
 ## Operator experience
@@ -131,9 +131,8 @@ survived the move: scope and delivery.
 - **Follow-ups and handback:** a worker cannot hand a message back for a new decision.
 - **Panel and API:** no UI, no management API, no health entries per component.
 - **Retry and stop from the CLI:** the Engine has them; the command does not.
-- **Interrupted assignments:** the loop does not recover them after a restart. A running turn ends when its process
-  ends.
-- **Concurrency limit:** `maxWorkers` is not enforced.
+- **Sessions:** a turn starts over after a restart. An agent CLI has no session to resume, so the recovery note tells it to
+  inspect the worktree and git history first.
 - **GitHub PR and CI tracking:** the agent opens pull requests, but the loop does not follow their checks.
 
 ## Where this project is ahead or simpler

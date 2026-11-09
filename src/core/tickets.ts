@@ -316,13 +316,18 @@ export class Tickets extends EnginePart {
   }
   /** Replace a ticket's running Assignment with a new one that receives `note` first, and queue it for launch. */
   restart(ticket: Ticket, running: Assignment, reason: string, note: string): void {
+    const at = this.now()
+    // The note joins the new Assignment's inputs, which its launch delivers: an undelivered input alone would leave the
+    // worker with nothing to read when it runs in a fresh process.
+    const input: TicketInput = { id: key('input', ticket.id, 'restart', running.id, at), kind: 'text', text: note, at }
+    ticket.inputs.push(input)
     this.endAssignment(ticket, running, reason)
     this.requeueUntaken(ticket, running)
     const assignment = this.newAssignment(ticket)
-    const at = this.now()
-    const input: TicketInput = { id: key('input', ticket.id, 'restart', assignment.id), kind: 'text', text: note, at }
-    ticket.inputs.push(input); ticket.undelivered.push(input.id); ticket.updatedAt = at
+    ticket.undelivered.push(input.id)
+    ticket.updatedAt = at
     this.repo.tickets.save(ticket)
+    this.options.executor.stop(ticket, running, reason)
     this.options.executor.start(ticket, assignment)
   }
   /**
