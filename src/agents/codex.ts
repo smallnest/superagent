@@ -19,8 +19,8 @@ export class CodexRunner implements AgentRunner {
     const lastMessage = join(run.cwd, '.superagent', 'codex-last-message.txt')
     const argv = [
       'exec',
-      // Full access is what a ticket needs: it edits files, runs tests and pushes. Codex sandboxes commands otherwise.
-      '--sandbox', 'danger-full-access',
+      // Full access for human-explicit runs; read-only sandbox for autonomous runs.
+      '--sandbox', run.readOnly ? 'read-only' : 'danger-full-access',
       '--skip-git-repo-check',
       // JSONL on stdout, so a later reader can reconstruct what happened.
       '--json',

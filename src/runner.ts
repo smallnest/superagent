@@ -82,14 +82,27 @@ function record(engine: Engine, repo: FileRepositories, finished: Finished[], lo
 }
 
 /** Posts the messages the Engine queued, one comment per message. */
-async function send(channel: Outbox & { drain: () => OutboundMessage[] }, clis: { github?: string; feishu?: string }, log: (line: string) => void): Promise<void> {
+async function send(
+  channel: Outbox & { drain: () => OutboundMessage[] },
+  clis: { github?: string; feishu?: string },
+  log: (line: string) => void,
+  attentionConfig?: Settings['attention'],
+): Promise<void> {
+  const quiet = isQuietHours(new Date(), attentionConfig?.quietHours)
+  const present = await isUserPresent(attentionConfig?.idleSecondsThreshold)
   for (const message of channel.drain()) {
     if (message.channel.source === 'feishu') {
       const address = message.channel.address as { chatId?: string; messageId?: string }
       if (!clis.feishu) { log(`Cannot answer in ${address.chatId}: the Feishu Source is off`); continue }
+      if (quiet && message.kind !== 'acknowledgement') {
+        log(`Quiet hours active (23:00-08:00); answered in ${address.chatId} quietly`)
+      } else if (present) {
+        log(`User is present at computer; answered in ${address.chatId}`)
+      } else {
+        log(`User is away; dispatched notification to mobile in ${address.chatId}`)
+      }
       try {
         await reply(clis.feishu, address.messageId!, message.text, message.id)
-        log(`Answered in ${address.chatId}`)
       } catch (error) { log(`Could not answer in ${address.chatId}: ${(error as Error).message}`) }
       continue
     }
@@ -113,6 +126,10 @@ import type { FileRepositories } from './state/files.ts'
 import type { Settings } from './settings.ts'
 import { composePrompt, standingRules } from './prompts.ts'
 import { buildPolicy, sourceScope } from './policy.ts'
+import { isQuietHours, isUserPresent } from './infra/presence.ts'
+import { BudgetGuard, type BudgetState } from './infra/budget.ts'
+import { TimerStore } from './infra/timers.ts'
+import { WatcherEngine } from './infra/watchers.ts'
 import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications } from './sources/github.ts'
@@ -233,6 +250,7 @@ class AgentExecutor implements Executor {
       await prepareWorktree({ checkout: settings.checkout, directory, branch, signal: controller.signal })
       if (settings.executor.prepare) await run('/bin/sh', ['-c', settings.executor.prepare], { env: this.variables(ticket, directory, branch), timeoutMs: 120_000 })
       const prompt = await this.options.prompt(ticket, directory, branch)
+      const isAutonomous = ticket.mandate.strength === 'inferred'
       const result = await runner.run({
         prompt,
         cwd: directory,
@@ -240,8 +258,20 @@ class AgentExecutor implements Executor {
         signal: controller.signal,
         timeoutMs: settings.executor.timeoutMinutes * 60_000,
         model: settings.executor.model,
+        readOnly: isAutonomous,
       })
       const report = result.report ?? inferReport(result.finalText, result.ok)
+      if (report.followupAfterSeconds && report.followupAfterSeconds > 0) {
+        const timerStore = new TimerStore(stateDir)
+        await timerStore.save({
+          id: `followup-${ticket.id}-${Date.now()}`,
+          kind: 'followup',
+          ticketId: ticket.id,
+          dueAt: new Date(Date.now() + report.followupAfterSeconds * 1000).toISOString(),
+          prompt: `Follow-up checkpoint for ticket ${ticket.id}: ${report.summary}`,
+          createdAt: new Date().toISOString(),
+        })
+      }
       await appendLog(directory, prompt, result.raw.slice(-20_000), report)
       site.reported(ticket.id, { state: report.state ?? (result.ok ? 'ready' : 'failed'), summary: report.summary, question: report.question ?? null })
     } catch (error) {
@@ -355,8 +385,9 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
       // A text input is a note the Engine carries, such as a recovery note after a restart; a fresh turn has not read it.
       const notes = ticket.inputs.flatMap(input => input.kind === 'text' ? [input.text] : [])
+      const readOnly = ticket.mandate.strength === 'inferred'
       return composePrompt({ ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
-        source, instructions: settings.prompts, branch, standing, notes })
+        source, instructions: settings.prompts, branch, standing, notes, readOnly })
     },
   })
   // `syncChat` copies a chat's members into the allow list each round, so a person joins by joining the chat. The list
@@ -426,6 +457,13 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // loop that runs one round at a time, and the round that hears of it may never reach its own record step.
   ;(engine as unknown as { options: { executor: Executor } }).options.executor = executor
 
+  const timerStore = new TimerStore(settings.stateDir)
+  const watcherEngine = new WatcherEngine(settings.stateDir)
+  const budgetGuard = new BudgetGuard(settings.budget, {
+    get: () => repo.getMeta<BudgetState>('budget:state'),
+    set: s => repo.setMeta('budget:state', s),
+  })
+
   // A ticket a previous process left running has no agent behind it: its turn ended with that process. Recovery reads the
   // disk, before a round takes the Engine's memory as the latest word, and starts the tickets again within the limit.
   try {
@@ -475,6 +513,63 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         since = round
         repo.setMeta(pollKey, since)
       }
+      // Process active watchers
+      if (settings.watchers && settings.watchers.length > 0) {
+        for (const watcher of settings.watchers) {
+          try {
+            const check = await watcherEngine.check(watcher, { now: new Date() })
+            if (check.triggered && check.diffText) {
+              const budgetCheck = await budgetGuard.check()
+              if (!budgetCheck.allowed) {
+                log(`Watcher ${watcher.id} triggered but postponed: ${budgetCheck.reason}`)
+                continue
+              }
+              await budgetGuard.record()
+              log(`Watcher ${watcher.id} detected output changes; generating trigger`)
+              const trigger: Trigger = {
+                id: `watcher:${watcher.id}:${Date.now()}`,
+                source: 'watcher',
+                threads: [{ source: 'watcher', id: watcher.id }],
+                actor: { source: 'watcher', id: 'system' },
+                human: false,
+                at: new Date().toISOString(),
+                text: check.diffText,
+                meta: { watcherId: watcher.id },
+              }
+              const result = repo.atomic(() => engine.receive(trigger))
+              if (result !== 'duplicate') log(`Received watcher trigger ${trigger.id}`)
+            }
+          } catch (error) {
+            log(`Watcher ${watcher.id} check error: ${(error as Error).message}`)
+          }
+        }
+      }
+      // Process due timers
+      if (settings.timers?.enabled) {
+        const dueTimers = await timerStore.getDue(new Date())
+        for (const timer of dueTimers) {
+          const budgetCheck = await budgetGuard.check()
+          if (!budgetCheck.allowed) {
+            log(`Timer ${timer.id} postponed: ${budgetCheck.reason}`)
+            break
+          }
+          await budgetGuard.record()
+          log(`Firing due timer ${timer.id} (${timer.kind})`)
+          const trigger: Trigger = {
+            id: `timer:${timer.id}:${Date.now()}`,
+            source: 'timer',
+            threads: [{ source: 'timer', id: timer.ticketId ?? timer.id }],
+            actor: { source: 'timer', id: 'system' },
+            human: false,
+            at: new Date().toISOString(),
+            text: timer.prompt,
+            meta: { timerId: timer.id, kind: timer.kind, ticketId: timer.ticketId },
+          }
+          const result = repo.atomic(() => engine.receive(trigger))
+          if (result !== 'duplicate') log(`Received timer trigger ${trigger.id}`)
+          await timerStore.processDue(timer, new Date())
+        }
+      }
       // The Engine queues an Eval per new thread; running it hands an unaddressed candidate to the assessor.
       engine.evaluateDue()
       decide(engine, decided.drain(), log)
@@ -486,7 +581,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       // The report goes back to where the person asked before any other message, so the answer reads as the outcome.
       deliver(engine, repo, delivered, log)
       await repo.flush()
-      await send(channel, { ...github ? { github: github.cli } : {}, ...feishu ? { feishu: feishu.cli } : {} }, log)
+      await send(channel, { ...github ? { github: github.cli } : {}, ...feishu ? { feishu: feishu.cli } : {} }, log, settings.attention)
       await repo.flush()
       await sync()
     } catch (error) {

@@ -34,6 +34,20 @@ describe('the prompt for a ticket', () => {
     expect(text).toContain('> The host restarted during this ticket.')
     expect(text.indexOf('## Notes since the start')).toBeLessThan(text.indexOf('## How to work'))
   })
+
+  it('includes autonomous run bounds when readOnly is true', () => {
+    const text = composePrompt({
+      ticket: { id: 't2', title: 'Check issue' } as never,
+      trigger: undefined,
+      repository: 'alice/widget',
+      agentLogin: 'agent',
+      branchPrefix: 'agent/',
+      instructions: '',
+      readOnly: true,
+    })
+    expect(text).toContain('Autonomous run mode')
+    expect(text).toContain('do NOT push commits')
+  })
 })
 
 describe('the reply a person receives', () => {

@@ -36,12 +36,23 @@ export function assessing(options: { settings: () => Settings; next: (candidate:
         let outcome: Outcome
         try {
           const settings = options.settings()
-          outcome = explicit
-            ? { kind: 'accept', ...named(candidate), scope: '', reason: 'A person addressed the agent' }
-            : assessmentOutcome(await options.next(candidate), settings, candidate.strength)
-          // The `unasked` rule is what lets an unaddressed message start work; without it an accept has no authority.
-          if (!explicit && outcome.kind === 'accept' && !settings.policy.rules.some(rule => rule.id === UNASKED_RULE)) {
-            outcome = { kind: 'ignore', reason: 'The assessment accepts, but no `unasked` rule is enabled' }
+          const trigger = candidate.triggers[0]
+          const isAutonomousTrigger = trigger?.source === 'timer' || trigger?.source === 'watcher'
+          if (isAutonomousTrigger) {
+            outcome = {
+              kind: 'accept',
+              title: trigger?.text.split('\n')[0]?.slice(0, 60) || 'Autonomous Task',
+              scope: 'autonomous',
+              reason: `Autonomous trigger from ${trigger?.source}`,
+            }
+          } else if (explicit) {
+            outcome = { kind: 'accept', ...named(candidate), scope: '', reason: 'A person addressed the agent' }
+          } else {
+            outcome = assessmentOutcome(await options.next(candidate), settings, candidate.strength)
+            // The `unasked` rule is what lets an unaddressed message start work; without it an accept has no authority.
+            if (outcome.kind === 'accept' && !settings.policy.rules.some(rule => rule.id === UNASKED_RULE)) {
+              outcome = { kind: 'ignore', reason: 'The assessment accepts, but no `unasked` rule is enabled' }
+            }
           }
         } catch (error) {
           // A failed assessment is visible as `unavailable`, which a person can re-run, rather than as a quiet ignore.

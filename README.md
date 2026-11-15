@@ -19,11 +19,25 @@ ln -sf "$PWD/bin/superagent.js" ~/.local/bin/superagent
 ```sh
 mkdir my-agent && cd my-agent
 superagent init             # writes settings.yaml and state/
-$EDITOR settings.yaml       # set github.repository, executor.agent, allowed lists
+superagent setup            # reads the GitHub account and the Feishu chat from `gh` and `lark-cli`
+$EDITOR settings.yaml       # choose executor.agent; adjust what setup filled
 superagent doctor           # confirms the chosen agent is installed
 superagent run . -p "Read README.md and summarise it in one sentence."
 superagent status
 ```
+
+`superagent setup` asks the CLIs that already know the answers, so no id is copied from a web page:
+
+```sh
+superagent setup .                     # both Sources, from the CLIs in settings.yaml
+superagent setup . github              # only the GitHub section
+superagent setup . feishu --chat Team  # the chat by name instead of id
+superagent setup . --allow alice,bob   # who may ask; a Feishu user name becomes an open id
+```
+
+It writes the login `gh` acts as, proves the repository is readable, lists the bot's chats, sets `feishu.syncChat` so
+the chat's members may ask, and turns each `--allow` name into the member's open id. It keeps every other line of
+`settings.yaml`. A CLI that cannot answer leaves that section as it was and exits with 1.
 
 `superagent run` is the smallest end-to-end test: it starts the configured agent in the current directory, waits for the
 turn to end, and prints the report the agent left in `.superagent/report.json`.
@@ -84,6 +98,11 @@ Arbitrary polling is not yet wired, so a person runs `poll` under cron or a syst
 [`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md)（[中文版](docs/dsh-superagent-comparison.zh.md)）
 compares this project with the earlier `dsh-superagent` DSH bundle: what both keep, what each does differently, and where
 this one is behind.
+
+## Always-on Agent Architecture
+
+See [`docs/always-on-architecture.md`](docs/always-on-architecture.md)（[中文版](docs/always-on-architecture.zh.md)）
+for how superagent incorporates the five core primitives from Anthropic's [*"Building always-on agents"*](https://claude.com/resources/articles/building-always-on-agents) (Event Inbox, Timers, Memory, Permissions, Outbox) and DeepSeek's Super-agent exploration: presence-aware attention routing, read-only autonomy, quiet hours batching, active watchers, and token budget protection.
 
 ## Status
 

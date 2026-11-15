@@ -12,15 +12,24 @@ import { readState, FileRepositories } from './state/files.ts'
 import { runLoop } from './runner.ts'
 import { reasonText } from './core/index.ts'
 import { defaultSettings, readSettings, SETTINGS_FILE, writeSettings } from './settings.ts'
+import { names, setup } from './setup.ts'
 
 const USAGE = `superagent — an agent that turns GitHub and Feishu requests into tickets
 
   superagent init [dir]            create ${SETTINGS_FILE} and the state directory in dir (default: .)
+  superagent setup [dir] [what…]   fill the GitHub and Feishu settings from the configured CLIs
   superagent status [dir]          print open tickets and recent activity as Markdown
   superagent doctor [dir]          show which coding agents are installed and which one is selected
   superagent agents                list the coding agents a configuration may name
   superagent run <dir> -p <text>   run one prompt on the configured agent, in a directory it names
   superagent poll [dir] [--once]   poll the Sources and run the tickets they bring, once or until interrupted
+
+superagent setup asks the CLIs that already know the answers, so a person does not copy ids out of a web page:
+
+  --allow <names>   logins or Feishu user names that may ask for work, comma separated
+                    (a name becomes the member's open id; the chat's members are added too)
+  --chat <id|name>  the Feishu chat the bot listens to
+  github, feishu    set up only one of them (the default is both)
 
 Every command that reads an installation takes the directory that holds ${SETTINGS_FILE}.`
 
@@ -56,6 +65,22 @@ async function init(dir: string): Promise<number> {
     '',
   ].join('\n'))
   return 0
+}
+
+/** Fills the Source settings from GitHub and Feishu; the options are read here so the module stays about the CLIs. */
+async function setupSources(dir: string, rest: readonly string[]): Promise<number> {
+  const flag = (name: string): string | undefined => { const index = rest.indexOf(name); return index < 0 ? undefined : rest[index + 1] }
+  const targets = rest.filter(item => item === 'github' || item === 'feishu') as Array<'github' | 'feishu'>
+  let settings
+  try { settings = await readSettings(join(dir, SETTINGS_FILE)) } catch (error) { process.stderr.write(`${(error as Error).message}\n`); return 1 }
+  return setup({
+    dir,
+    targets: [...new Set(targets)],
+    allow: names(flag('--allow')),
+    chat: flag('--chat'),
+    stateDir: await exists(settings.stateDir) ? settings.stateDir : undefined,
+    log: line => process.stdout.write(`${line}\n`),
+  })
 }
 
 async function status(dir: string): Promise<number> {
@@ -156,6 +181,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const dirOf = (index: number): string => rest[index] && !rest[index]!.startsWith('-') ? resolve(rest[index]!) : process.cwd()
   switch (command) {
     case 'init': return init(rest[0] ? resolve(rest[0]) : process.cwd())
+    case 'setup': return setupSources(dirOf(0), rest)
     case 'status': return status(dirOf(0))
     case 'doctor': return doctor(dirOf(0))
     case 'agents': process.stdout.write(`${AGENT_NAMES.join('\n')}\n`); return 0

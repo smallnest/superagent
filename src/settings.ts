@@ -45,6 +45,42 @@ const PolicySchema = z.object({
   rules: z.array(RuleSchema).default([]),
 })
 
+export const AttentionSchema = z.object({
+  idleSecondsThreshold: z.number().int().min(10).max(86400).default(300),
+  quietHours: z.object({
+    enabled: z.boolean().default(true),
+    start: z.string().default('23:00'),
+    end: z.string().default('08:00'),
+    morningDigestAt: z.string().default('08:30'),
+  }).default({ enabled: true, start: '23:00', end: '08:00', morningDigestAt: '08:30' }),
+  minNotifyIntervalMinutes: z.number().int().min(1).max(1440).default(10),
+  maxDailyNotifications: z.number().int().min(1).max(1000).default(25),
+})
+
+export const BudgetSchema = z.object({
+  autonomousCooldownSeconds: z.number().int().min(0).max(86400).default(180),
+  maxAutonomousWakesPerDay: z.number().int().min(1).max(1000).default(48),
+})
+
+export const TimerScheduleSchema = z.object({
+  id: z.string().min(1),
+  cron: z.string().optional(),
+  intervalMinutes: z.number().int().min(1).optional(),
+  prompt: z.string().min(1),
+})
+
+export const TimersSchema = z.object({
+  enabled: z.boolean().default(true),
+  schedules: z.array(TimerScheduleSchema).default([]),
+})
+
+export const WatcherSchema = z.object({
+  id: z.string().min(1),
+  intervalMinutes: z.number().int().min(1).default(10),
+  command: z.string().min(1),
+  instruction: z.string().min(1),
+})
+
 export const SettingsSchema = z.object({
   /** Where tickets, triggers and logs live, as an absolute path. */
   stateDir: z.string().min(1),
@@ -84,6 +120,14 @@ export const SettingsSchema = z.object({
   branchPrefix: z.string().default('agent/'),
   /** The operator's own instructions, appended to every ticket's prompt in their words. */
   prompts: z.string().default(''),
+  /** Human presence and attention routing configuration. */
+  attention: AttentionSchema.optional().transform(value => AttentionSchema.parse(value ?? {})),
+  /** Token and autonomous wakeup protection guard. */
+  budget: BudgetSchema.optional().transform(value => BudgetSchema.parse(value ?? {})),
+  /** Autonomous timers and schedules. */
+  timers: TimersSchema.optional().transform(value => TimersSchema.parse(value ?? {})),
+  /** Pull-based active watchers for external sources without webhooks. */
+  watchers: z.array(WatcherSchema).default([]),
 })
 
 export type Settings = z.infer<typeof SettingsSchema>

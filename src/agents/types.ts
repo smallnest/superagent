@@ -21,6 +21,8 @@ export interface AgentReport {
   question?: string
   /** Anything else the agent wants on the record. */
   notes?: string
+  /** Optional delay in seconds after which the agent requests an autonomous follow-up wake. */
+  followupAfterSeconds?: number
 }
 
 export interface AgentRun {
@@ -34,6 +36,8 @@ export interface AgentRun {
   timeoutMs?: number
   /** Overrides the configured model, such as a per-ticket choice. */
   model?: string | undefined
+  /** When true, restricts agent tools to read-only inspection mode for unprompted/autonomous runs. */
+  readOnly?: boolean
 }
 
 export interface AgentResult {

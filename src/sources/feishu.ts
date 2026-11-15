@@ -112,7 +112,7 @@ export async function botIdentity(cli: string, chatIds: readonly string[], signa
 /** The members of a chat, which fill the allow list when `settings.feishu.syncChat` names it. */
 export async function chatMembers(cli: string, chatId: string, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
   const result = await runJson<{ users?: Array<{ member_id: string; name?: string }> }>(cli,
-    ['im', '+chat-members-list', '--chat-id', chatId, '--member-types', 'user', '--page-all', '--page-limit', '0'], { signal })
+    ['im', '+chat-members-list', '--chat-id', chatId, '--member-types', 'user', '--page-all'], { signal })
   return (result.users ?? []).map(user => ({ id: user.member_id, name: user.name ?? user.member_id }))
 }
 

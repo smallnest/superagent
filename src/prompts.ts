@@ -26,6 +26,8 @@ export interface PromptInput {
   standing?: string[]
   /** Notes a person was sent, such as a recovery note after a restart, which a fresh turn has not read in a session. */
   notes?: string[]
+  /** When true, informs the agent of autonomous read-only sandbox boundaries. */
+  readOnly?: boolean
 }
 
 /**
@@ -70,6 +72,10 @@ export function composePrompt(input: PromptInput): string {
     '- Run the tests the repository has. Do not claim a check passed unless you ran it.',
     '- Do not merge the pull request. A person merges it.',
     '- If the request needs a decision you cannot make, stop and ask one concrete question.',
+    ...input.readOnly ? [
+      '- Autonomous run mode: you may inspect, search, and run tests, but do NOT push commits or make permanent mutations.',
+      '- If code changes or human decisions are required, report state as "blocked" and provide a "question" for human approval.',
+    ] : [],
     ...standing.filter(Boolean).flatMap(rule => ['', rule]),
     ...instructions.trim() ? ['', '## Team instructions', '', instructions.trim()] : [],
     reportInstructions(),

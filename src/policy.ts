@@ -13,6 +13,9 @@ import type { Settings } from './settings.ts'
 /** Which sources this installation's Sources read, and whether they read every message in that scope. */
 export function sourceScope(settings: Settings): SourceScope {
   return { scope: input => {
+    if (input.source === 'timer' || input.source === 'watcher') {
+      return { listened: true, observed: true }
+    }
     if (input.source === 'feishu') {
       if (!settings.feishu?.enabled) return { listened: false, reason: 'sourceOff' }
       // The bot is in the chat and receives every message there; `chats` names what it reads.
@@ -38,6 +41,10 @@ export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceS
     paused: false,
     evalTimeoutMs: 120_000,
     gate: (trigger: Trigger, _thread: Thread, _tickets: Ticket[], received?: ScopeResult): GateResult => {
+      if (trigger.source === 'timer' || trigger.source === 'watcher') {
+        const basis = { via: 'admission' as const, cell: 'listedUnaddressed' as const }
+        return { admissible: true, strength: 'inferred', basis }
+      }
       if (!trigger.human) return { admissible: false, reason: 'bot' }
       const allowed = people(trigger.source).has(trigger.actor.id.toLowerCase())
       // Observed, not merely listened: this installation may accept what the Source receives unaddressed. A Source that

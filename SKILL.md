@@ -102,6 +102,45 @@ policy:
 `unasked` rule is required for an unaddressed message to start work. `superagent status` lists the recent
 judgements under "Unaddressed messages". Keep `observe` until the judgements read right.
 
+## Always-On Autonomous Configuration
+
+superagent implements the five core primitives from Anthropic's *"Building always-on agents"*:
+
+```yaml
+# Presence detection & notification quiet hours
+attention:
+  idleSecondsThreshold: 300     # consider user away after 5 minutes of input inactivity
+  quietHours:
+    enabled: true
+    start: "23:00"
+    end: "08:00"
+    morningDigestAt: "08:30"
+  minNotifyIntervalMinutes: 10
+  maxDailyNotifications: 25
+
+# Token and wakeup budget guard (protects API spend)
+budget:
+  autonomousCooldownSeconds: 180  # min cooldown between autonomous runs
+  maxAutonomousWakesPerDay: 48    # daily autonomous cap
+
+# Proactive timers & recurring schedules
+timers:
+  enabled: true
+  schedules:
+    - id: daily-check
+      intervalMinutes: 1440
+      prompt: "Report summary of open tickets."
+
+# Active watchers for pull-based sources without webhooks
+watchers:
+  - id: watch-prs
+    intervalMinutes: 10
+    command: "gh pr list --state open"
+    instruction: "Perform read-only code review on newly opened PRs."
+```
+
+In autonomous runs (unaddressed messages, timers, watchers), tools are automatically restricted to read-only mode (`Read`, `Grep`, `Glob` / sandbox read-only) to prevent unintended mutations. When user input or mutation is required, the ticket asks a question and pauses in `blocked`/`attention` state.
+
 ## Rules to keep
 
 - **Start narrow.** One repository, one chat, one allowed login. Widen after the agent's work looks right.
@@ -113,6 +152,7 @@ judgements under "Unaddressed messages". Keep `observe` until the judgements rea
 | Command | Does |
 | --- | --- |
 | `superagent init [dir]` | create `settings.yaml` and the state directory; a second run keeps both |
+| `superagent setup [dir] [github\|feishu] [--allow a,b] [--chat id\|name]` | fill the GitHub and Feishu sections from the configured CLIs; a CLI that cannot answer changes nothing and exits 1 |
 | `superagent status [dir]` | print open and ended tickets, and the recent judgements of unaddressed messages, as Markdown |
 | `superagent doctor [dir]` | show installed agents and the selected one |
 | `superagent agents` | list the agent names a configuration may use |
@@ -126,6 +166,7 @@ The first argument is the installation directory and defaults to the current dir
 | Symptom | Cause and fix |
 | --- | --- |
 | `No configuration at …` | Run `superagent init` in the installation directory. |
+| `Feishu: … cannot listen to oc_…` | The bot is not in that chat, or the chat listing failed; add the bot, or pass a chat it is in. |
 | `The configuration at … is invalid` | The message names the key; fix that key in `settings.yaml`. |
 | `Selected: **x** — not installed` | Install that CLI or choose another `executor.agent`. |
 | A ticket ends with a failed report | Read `state/tickets/<id>/log.md`; the agent's last message is at the end. |

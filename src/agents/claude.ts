@@ -18,8 +18,8 @@ export class ClaudeRunner implements AgentRunner {
       '-p',
       '--output-format', 'stream-json',
       '--verbose',
-      // A ticket edits files, runs tests and pushes to a branch, which the default permission mode would block.
-      '--dangerously-skip-permissions',
+      // Autonomous runs are restricted to read-only tools; human-explicit runs get full permissions.
+      ...run.readOnly ? ['--tools', 'Read,Grep,Glob'] : ['--dangerously-skip-permissions'],
       ...run.model ? ['--model', run.model] : [],
     ]
     const result = await runProcess(this.binary, argv, { cwd: run.cwd, env: run.env, stdin: run.prompt, signal: run.signal, timeoutMs: run.timeoutMs })

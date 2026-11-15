@@ -22,6 +22,10 @@ describe('the configuration file', () => {
     expect(settings.executor.agent).toBe('codex')
     expect(settings.executor.maxWorkers).toBe(2)
     expect(settings.executor.blockedCommands).toEqual(['docker', 'kubectl'])
+    expect(settings.attention.idleSecondsThreshold).toBe(300)
+    expect(settings.budget.maxAutonomousWakesPerDay).toBe(48)
+    expect(settings.timers.enabled).toBe(true)
+    expect(settings.watchers).toEqual([])
   })
 
   it('round trips what it writes', () => {
