@@ -39,4 +39,21 @@ describe('the configuration file', () => {
     expect(result.success).toBe(false)
     expect(result.error?.issues[0]?.path.join('.')).toBe('github.repository')
   })
+
+  it('reads twitter configuration', () => {
+    const parsed = parseYaml([
+      'stateDir: /tmp/state',
+      'checkout: /tmp/repo',
+      'twitter:',
+      '  enabled: true',
+      '  query: "superagent OR @smallnest"',
+      '  pollSeconds: 120',
+      '  allowed: [alice, bob]',
+    ].join('\n'))
+    const settings = SettingsSchema.parse(parsed)
+    expect(settings.twitter?.enabled).toBe(true)
+    expect(settings.twitter?.query).toBe('superagent OR @smallnest')
+    expect(settings.twitter?.pollSeconds).toBe(120)
+    expect(settings.twitter?.allowed).toEqual(['alice', 'bob'])
+  })
 })

@@ -84,13 +84,23 @@ function record(engine: Engine, repo: FileRepositories, finished: Finished[], lo
 /** Posts the messages the Engine queued, one comment per message. */
 async function send(
   channel: Outbox & { drain: () => OutboundMessage[] },
-  clis: { github?: string; feishu?: string },
+  clis: { github?: string; feishu?: string; twitter?: string },
   log: (line: string) => void,
   attentionConfig?: Settings['attention'],
 ): Promise<void> {
   const quiet = isQuietHours(new Date(), attentionConfig?.quietHours)
   const present = await isUserPresent(attentionConfig?.idleSecondsThreshold)
   for (const message of channel.drain()) {
+    if (message.channel.source === 'twitter') {
+      const address = message.channel.address as { tweetUrl?: string; tweetId?: string }
+      if (!clis.twitter) { log(`Cannot answer on Twitter: the Twitter Source is off`); continue }
+      if (!address.tweetUrl) continue
+      try {
+        await replyTweet(clis.twitter, address.tweetUrl, message.text)
+        log(`Replied to tweet ${address.tweetUrl}`)
+      } catch (error) { log(`Could not reply to tweet ${address.tweetUrl}: ${(error as Error).message}`) }
+      continue
+    }
     if (message.channel.source === 'feishu') {
       const address = message.channel.address as { chatId?: string; messageId?: string }
       if (!clis.feishu) { log(`Cannot answer in ${address.chatId}: the Feishu Source is off`); continue }
@@ -134,6 +144,7 @@ import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications } from './sources/github.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
+import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
 
 /** Where the loop keeps its own bookkeeping, beside the domain state. */
@@ -340,8 +351,10 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const signal = stop.signal
   const github = settings.github?.enabled ? settings.github : undefined
   const feishu = settings.feishu?.enabled ? settings.feishu : undefined
-  if (!github && !feishu) throw new Error('No Source is on in settings.yaml; nothing to poll.')
+  const twitter = settings.twitter?.enabled ? settings.twitter : undefined
+  if (!github && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
   const login = github ? await agentLogin(github.cli, signal) : ''
+  const twitterBot = twitter ? await twitterAccount(twitter.cli, signal) : ''
   // Without a GitHub Source the shims point at nothing usable; every GitHub action then fails inside the run, which is right.
   const accounts = { stateDir: settings.stateDir, githubCli: github?.cli ?? 'gh', agentLogin: login } as EnvironmentAccounts
   await writeEnvironment(accounts, settings.executor.blockedCommands)
@@ -513,6 +526,22 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         since = round
         repo.setMeta(pollKey, since)
       }
+      if (twitter) {
+        try {
+          const triggers = await searchTweets(twitter.cli, twitter.query, {
+            seen: id => repo.getMeta<boolean>(`twitter:seen:${id}`) === true,
+            mark: id => repo.setMeta(`twitter:seen:${id}`, true),
+            agentLogin: twitterBot,
+            signal,
+          })
+          for (const trigger of triggers) {
+            const result = engine.receive(trigger)
+            if (result !== 'duplicate') log(`Received Twitter trigger ${trigger.id} from @${trigger.actor.id}`)
+          }
+        } catch (error) {
+          if (!signal.aborted) log(`Twitter poll failed: ${(error as Error).message}`)
+        }
+      }
       // Process active watchers
       if (settings.watchers && settings.watchers.length > 0) {
         for (const watcher of settings.watchers) {
@@ -581,7 +610,11 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       // The report goes back to where the person asked before any other message, so the answer reads as the outcome.
       deliver(engine, repo, delivered, log)
       await repo.flush()
-      await send(channel, { ...github ? { github: github.cli } : {}, ...feishu ? { feishu: feishu.cli } : {} }, log, settings.attention)
+      await send(channel, {
+        ...github ? { github: github.cli } : {},
+        ...feishu ? { feishu: feishu.cli } : {},
+        ...twitter ? { twitter: twitter.cli } : {},
+      }, log, settings.attention)
       await repo.flush()
       await sync()
     } catch (error) {
@@ -590,7 +623,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     if (options.once) break
     // A turn that ends during the wait is recorded by the next round, which starts at once instead of at the interval;
     // a GitHub Source with a longer interval waits in the same way, and the Source's own timer adds nothing to it.
-    const seconds = Math.min(github?.pollSeconds ?? Infinity, feishu ? 15 : Infinity)
+    const seconds = Math.min(github?.pollSeconds ?? Infinity, feishu ? 15 : Infinity, twitter?.pollSeconds ?? Infinity)
     // Only a loop that runs for long waits between rounds; one round on demand ends here, so its timeout has nothing to wake.
     let left = options.once ? 0 : seconds * 1000
     while (left > 0 && !signal.aborted) {

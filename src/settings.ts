@@ -108,6 +108,17 @@ export const SettingsSchema = z.object({
     allowed: z.array(z.string()).default([]),
     syncChat: z.string().optional(),
   }).optional(),
+  twitter: z.object({
+    enabled: z.boolean().default(true),
+    /** The CLI that acts as Twitter client (opencli). */
+    cli: z.string().default('opencli'),
+    /** Search query or keywords to monitor (e.g. "superagent OR @smallnest"). */
+    query: z.string().min(1),
+    /** How often to poll Twitter search, in seconds. */
+    pollSeconds: z.number().int().min(15).max(3600).default(300),
+    /** Twitter handles that may trigger tickets; empty accepts any user matching the query. */
+    allowed: z.array(z.string()).default([]),
+  }).optional(),
   executor: ExecutorSchema.optional().transform(value => ExecutorSchema.parse(value ?? {})),
   policy: PolicySchema.optional().transform(value => PolicySchema.parse(value ?? {})),
   /** Who assesses a candidate and with what: the `claude` CLI, or a runner named here. */

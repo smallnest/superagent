@@ -1,6 +1,6 @@
 ---
 name: superagent
-description: Run an agent that turns requests from GitHub issues or Feishu chats into tickets and executes each ticket on a configurable coding agent (Claude Code, Codex, opencode). Use when the user wants an agent to watch a repository or a chat, act on @ mentions, and record its work as plain files instead of a dashboard; when they ask what superagent has done, which tickets are open, or to change which coding agent runs tickets.
+description: Run an agent that turns requests from GitHub issues, Feishu chats, or Twitter/X mentions into tickets and executes each ticket on a configurable coding agent (Claude Code, Codex, opencode). Use when the user wants an agent to watch a repository, a chat, or Twitter keywords, act on @ mentions, and record its work as plain files instead of a dashboard; when they ask what superagent has done, which tickets are open, or to change which coding agent runs tickets.
 ---
 
 # Superagent
@@ -76,6 +76,11 @@ feishu:
   chats: [{ chatId: oc_..., name: Team }]
   allowed: []           # or set syncChat to copy the chat's members
   syncChat: oc_...
+twitter:
+  cli: opencli          # the CLI that acts as Twitter client
+  query: "superagent OR @mybot"  # keywords or mentions to monitor
+  pollSeconds: 300      # how often to search for new tweets
+  allowed: []           # empty accepts any user matching query
 ```
 
 The agent acts only as the accounts those CLIs are signed in to. Never point `cli` at a personal login: everything the

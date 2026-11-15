@@ -43,7 +43,7 @@ export async function runJson<T>(program: string, argv: string[], options: RunOp
     const error = (parsed as { error?: { message?: string } }).error
     throw new CliError(program, `${program} ${argv.join(' ')}: ${error?.message ?? 'failed'}`, text, '')
   }
-  // `lark-cli` answers with a `code` envelope; `gh api` never does, and a resource may legitimately carry a `data` field.
-  if (parsed && typeof parsed === 'object' && 'code' in parsed && 'data' in parsed) return (parsed as { data: T }).data
+  // `lark-cli` and `opencli` answer with `{code, data}` or `{ok, data}` envelopes; `gh api` never does.
+  if (parsed && typeof parsed === 'object' && ('code' in parsed || 'ok' in parsed) && 'data' in parsed) return (parsed as { data: T }).data
   return parsed as T
 }

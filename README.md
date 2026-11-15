@@ -1,6 +1,6 @@
 # superagent
 
-An agent that turns requests from GitHub and Feishu into tickets, and runs each ticket on the coding agent you choose.
+An agent that turns requests from GitHub, Feishu, and Twitter/X into tickets, and runs each ticket on the coding agent you choose.
 
 - **No web panel.** State is JSON files under `stateDir`, so `ls` and `cat` answer what a dashboard would.
 - **No vendor lock-in.** The executor is a configuration value: `claude`, `codex` or `opencode`, behind one interface.

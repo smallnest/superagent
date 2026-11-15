@@ -16,6 +16,10 @@ export function sourceScope(settings: Settings): SourceScope {
     if (input.source === 'timer' || input.source === 'watcher') {
       return { listened: true, observed: true }
     }
+    if (input.source === 'twitter') {
+      if (!settings.twitter?.enabled) return { listened: false, reason: 'sourceOff' }
+      return { listened: true, observed: true }
+    }
     if (input.source === 'feishu') {
       if (!settings.feishu?.enabled) return { listened: false, reason: 'sourceOff' }
       // The bot is in the chat and receives every message there; `chats` names what it reads.
@@ -35,7 +39,11 @@ export const UNASKED_RULE = 'unasked'
 
 /** The Policy of one settings file, rebuilt whenever the round reads it. */
 export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceScope>) {
-  const people = (source: string): Set<string> => new Set((source === 'feishu' ? settings.feishu?.allowed : settings.github?.allowed)?.map(id => id.toLowerCase()) ?? [])
+  const people = (source: string): Set<string> => new Set((source === 'feishu'
+    ? settings.feishu?.allowed
+    : source === 'twitter'
+    ? settings.twitter?.allowed
+    : settings.github?.allowed)?.map(id => id.toLowerCase()) ?? [])
   return {
     version: `${settings.policy.mode}:${settings.policy.rules.filter(rule => rule.enabled).map(rule => rule.id).join(',')}`,
     paused: false,
@@ -46,7 +54,9 @@ export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceS
         return { admissible: true, strength: 'inferred', basis }
       }
       if (!trigger.human) return { admissible: false, reason: 'bot' }
-      const allowed = people(trigger.source).has(trigger.actor.id.toLowerCase())
+      const allowed = trigger.source === 'twitter' && settings.twitter?.allowed.length === 0
+        ? true
+        : people(trigger.source).has(trigger.actor.id.toLowerCase())
       // Observed, not merely listened: this installation may accept what the Source receives unaddressed. A Source that
       // passes its own answer (GitHub, whose notifications are addressed) says so, since its Threads carry no scope in meta.
       const seen = received ?? scope.scope(trigger)
