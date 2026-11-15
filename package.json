@@ -1,8 +1,8 @@
 {
   "name": "superagent-skill",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "A headless, file-backed agent that turns requests from GitHub issues or Feishu chats into tickets and runs each ticket on a configurable coding agent: Claude Code, Codex or opencode.",
+  "description": "A headless, file-backed agent that turns requests from GitHub issues, Feishu chats, or Twitter mentions into tickets and runs each ticket on a configurable coding agent: Claude Code, Codex or opencode.",
   "bin": {
     "superagent": "bin/superagent.js"
   },
@@ -33,6 +33,8 @@
     "opencode",
     "feishu",
     "github",
+    "twitter",
+    "always-on",
     "automation",
     "tickets"
   ],
