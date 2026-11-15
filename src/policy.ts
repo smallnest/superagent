@@ -30,7 +30,8 @@ export function sourceScope(settings: Settings): SourceScope {
     const repository = (input.meta.repository as string | undefined) ?? settings.github.repository
     if (!repository) return { listened: false, reason: 'unsupported' }
     if (repository.toLowerCase() !== settings.github.repository.toLowerCase()) return { listened: false, reason: 'otherRepository' }
-    return { listened: true, observed: false }
+    const isPr = Boolean(input.meta.isPr) && Boolean(settings.github.prReview?.enabled)
+    return { listened: true, observed: isPr }
   } }
 }
 
@@ -52,6 +53,12 @@ export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceS
       if (trigger.source === 'timer' || trigger.source === 'watcher') {
         const basis = { via: 'admission' as const, cell: 'listedUnaddressed' as const }
         return { admissible: true, strength: 'inferred', basis }
+      }
+      const isPrReview = trigger.source === 'github' && Boolean(trigger.meta?.isPr) && Boolean(settings.github?.prReview?.enabled)
+      if (isPrReview && settings.github?.prReview?.allowCommunityPrs !== false) {
+        const addressed = !!trigger.addressed
+        const basis = addressed ? { via: 'listed' as const, addressed: trigger.addressed } : { via: 'admission' as const, cell: 'listedUnaddressed' as const }
+        return { admissible: true, strength: addressed ? 'explicit' : 'inferred', basis }
       }
       if (!trigger.human) return { admissible: false, reason: 'bot' }
       const allowed = trigger.source === 'twitter' && settings.twitter?.allowed.length === 0

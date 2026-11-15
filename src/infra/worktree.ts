@@ -27,32 +27,64 @@ async function isGitRepository(directory: string): Promise<boolean> {
   } catch { return false }
 }
 
+export interface PrepareWorktreeOptions {
+  checkout: string
+  directory: string
+  branch: string
+  prNumber?: number
+  repository?: string
+  signal?: AbortSignal
+}
+
 /**
  * Creates the worktree for a ticket and returns its directory.
+ * When `prNumber` is specified, fetches the PR branch/head and checks it out directly into the worktree.
  *
  * @throws when git cannot create the worktree, such as when the checkout has no commit yet; the caller then reports the
  * ticket as failed instead of starting an agent in a directory that is not the repository.
  */
-export async function prepareWorktree(options: {
-  checkout: string
-  directory: string
-  branch: string
-  signal?: AbortSignal
-}): Promise<string> {
-  const { checkout, directory, branch, signal } = options
+export async function prepareWorktree(options: PrepareWorktreeOptions): Promise<string> {
+  const { checkout, directory, branch, prNumber, repository, signal } = options
   await mkdir(directory, { recursive: true })
   if ((await readdir(directory)).length) return directory
   if (!await isGitRepository(checkout)) return directory
+
+  if (prNumber) {
+    let fetched = false
+    try {
+      await run('git', ['-C', checkout, 'fetch', 'origin', `pull/${prNumber}/head:${branch}`], { signal, timeoutMs: 60_000 })
+      fetched = true
+    } catch {
+      if (repository) {
+        try {
+          await run('git', ['-C', checkout, 'fetch', `https://github.com/${repository}.git`, `pull/${prNumber}/head:${branch}`], { signal, timeoutMs: 60_000 })
+          fetched = true
+        } catch { /* fallback to base HEAD */ }
+      }
+    }
+    if (fetched) {
+      await run('git', ['-C', checkout, 'worktree', 'add', directory, branch], { signal, timeoutMs: 120_000 })
+        .catch(async error => {
+          await removeWorktree(checkout, directory, signal, branch)
+          throw new Error(`${directory} is not a branch point for PR #${prNumber}: ${(error as Error).message}`, { cause: error })
+        })
+      return directory
+    }
+  }
+
   // The base is named first, because `worktree add -b` refuses a detached HEAD and `switch` would then create an orphan branch.
   const base = (await run('git', ['-C', checkout, 'rev-parse', 'HEAD'], { signal, timeoutMs: 10_000 })).trim()
   await run('git', ['-C', checkout, 'worktree', 'add', '-b', branch, directory, base], { signal, timeoutMs: 120_000 })
     .catch(
       // Failing is the expected case here, so the stack is not worth printing.
-      async error => { await removeWorktree(checkout, directory, signal); throw new Error(`${directory} is not a branch point: ${(error as Error).message}`, { cause: error }) })
+      async error => { await removeWorktree(checkout, directory, signal, branch); throw new Error(`${directory} is not a branch point: ${(error as Error).message}`, { cause: error }) })
   return directory
 }
 
 /** Removes a ticket's worktree once its ticket ended, so the state directory does not grow without bound. */
-export async function removeWorktree(checkout: string, directory: string, signal?: AbortSignal): Promise<void> {
+export async function removeWorktree(checkout: string, directory: string, signal?: AbortSignal, branchToDelete?: string): Promise<void> {
   try { await run('git', ['-C', checkout, 'worktree', 'remove', '--force', directory], { signal, timeoutMs: 120_000 }) } catch { /* a directory that was never a worktree needs no removal */ }
+  if (branchToDelete) {
+    try { await run('git', ['-C', checkout, 'branch', '-D', branchToDelete], { signal, timeoutMs: 10_000 }) } catch { /* ignore */ }
+  }
 }

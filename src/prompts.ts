@@ -28,6 +28,17 @@ export interface PromptInput {
   notes?: string[]
   /** When true, informs the agent of autonomous read-only sandbox boundaries. */
   readOnly?: boolean
+  /** Local PR verification results, when reviewing a pull request. */
+  prVerification?: {
+    passed: boolean
+    markdown: string
+  }
+  /** True when the ticket is reviewing a pull request. */
+  isPrReview?: boolean
+  /** The PR number being reviewed. */
+  prNumber?: number
+  /** Whether auto-merging is permitted upon approval. */
+  autoMergeAllowed?: boolean
 }
 
 /**
@@ -43,8 +54,62 @@ export async function standingRules(): Promise<string[]> {
   return Promise.all(STANDING_FILES.map(async name => (await readFile(join(STANDING_DIR, name), 'utf8')).trim()))
 }
 
+export async function prReviewRules(): Promise<string> {
+  try {
+    return (await readFile(join(STANDING_DIR, 'pr-review.md'), 'utf8')).trim()
+  } catch {
+    return ''
+  }
+}
+
+/** Composes the prompt for reviewing and verifying a pull request. */
+export function composePrReviewPrompt(input: PromptInput): string {
+  const { ticket, trigger, repository, agentLogin, instructions, standing = [], notes = [], prNumber, prVerification, autoMergeAllowed } = input
+  const asked = trigger
+    ? `Pull Request #${prNumber} details:\n\n${quote(trigger.text)}`
+    : `Pull Request #${prNumber} review:\n\n${quote(ticket.title)}`
+
+  return [
+    `# Ticket ${ticket.id} — Pull Request #${prNumber} Review & Verification`,
+    '',
+    `You are reviewing Pull Request #${prNumber} on repository \`${repository}\`.`,
+    `The PR's code has been checked out directly into this working directory.`,
+    `Your GitHub account is \`${agentLogin}\`.`,
+    '',
+    '## The Pull Request',
+    '',
+    asked,
+    ...notes.filter(Boolean).flatMap(note => ['', '## Notes since the start', '', quote(note)]),
+    '',
+    '## Automated Local Verification Report',
+    '',
+    prVerification ? prVerification.markdown : 'No automated verification commands were configured.',
+    '',
+    '## Review Instructions & Standards',
+    '',
+    '- **Inspect Every Line**: Scrutinize the git diff and logic changes. Do not blindly trust community submissions.',
+    '- **Zero Tolerance for AI Slop**: Many PRs are generated hastily by coding agents without testing. Ensure logic is sound, error handling is thorough, and no regressions are introduced.',
+    ...(prVerification && !prVerification.passed ? [
+      '- ⚠️ **CRITICAL: Local automated verification has FAILED.** You MUST NOT approve or merge this PR. Clearly point out the failure logs and what the author needs to fix.',
+    ] : []),
+    '- **Decision Standards**:',
+    autoMergeAllowed && (!prVerification || prVerification.passed)
+      ? '  - Conclude your report with `DECISION: MERGE` ONLY if all automated checks passed AND your line-by-line review confirms the code is robust and bug-free.'
+      : '  - Conclude your report with `DECISION: APPROVE` if all tests passed and the code is clean (human maintainer will merge).',
+    '  - Conclude your report with `DECISION: REQUEST_CHANGES` if tests failed, or if you found bugs, flaws, or missing tests.',
+    '  - Conclude your report with `DECISION: CLOSE` if the PR is spam, malicious, completely misguided, or unfixable.',
+    '',
+    ...standing.filter(Boolean).flatMap(rule => ['', rule]),
+    ...instructions.trim() ? ['', '## Team instructions', '', instructions.trim()] : [],
+    reportInstructions(),
+  ].join('\n')
+}
+
 /** Composes the prompt for one ticket: who asked, what they asked, and what the agent must not assume. */
 export function composePrompt(input: PromptInput): string {
+  if (input.isPrReview && input.prNumber) {
+    return composePrReviewPrompt(input)
+  }
   const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch, standing = [], notes = [] } = input
   const asked = trigger
     ? `A person wrote this in ${trigger.url ?? trigger.channel?.thread ?? 'the source conversation'}:\n\n${quote(trigger.text)}`

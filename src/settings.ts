@@ -81,6 +81,25 @@ export const WatcherSchema = z.object({
   instruction: z.string().min(1),
 })
 
+export const PrReviewSchema = z.object({
+  /** Whether autonomous PR review is enabled. */
+  enabled: z.boolean().default(true),
+  /** When true, actively polls open PRs in the repository. */
+  pollOpenPrs: z.boolean().default(true),
+  /** Commands to run locally inside the worktree to verify the PR, e.g. ["npm test", "npm run build"]. */
+  verifyCommands: z.array(z.string()).default([]),
+  /** Timeout in seconds for each verify command. Default 300s. */
+  verifyTimeoutSeconds: z.number().int().min(10).max(3600).default(300),
+  /** Whether to automatically merge the PR if tests pass and review passes. */
+  autoMerge: z.boolean().default(false),
+  /** Method to use when auto-merging: "squash" | "merge" | "rebase". Default "squash". */
+  mergeMethod: z.enum(['squash', 'merge', 'rebase']).default('squash'),
+  /** Whether community PRs (from authors not explicitly in allowed list) may be reviewed. */
+  allowCommunityPrs: z.boolean().default(true),
+})
+
+export type PrReview = z.infer<typeof PrReviewSchema>
+
 export const SettingsSchema = z.object({
   /** Where tickets, triggers and logs live, as an absolute path. */
   stateDir: z.string().min(1),
@@ -95,6 +114,8 @@ export const SettingsSchema = z.object({
     pollSeconds: z.number().int().min(15).max(3600).default(60),
     /** GitHub logins that may ask for work. Empty accepts nobody. */
     allowed: z.array(z.string()).default([]),
+    /** Pull request review, checkout, and verification settings. */
+    prReview: PrReviewSchema.optional(),
   }).optional(),
   feishu: z.object({
     enabled: z.boolean().default(true),

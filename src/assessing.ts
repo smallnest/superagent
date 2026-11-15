@@ -38,12 +38,22 @@ export function assessing(options: { settings: () => Settings; next: (candidate:
           const settings = options.settings()
           const trigger = candidate.triggers[0]
           const isAutonomousTrigger = trigger?.source === 'timer' || trigger?.source === 'watcher'
+          const isPrReview = trigger?.source === 'github' && Boolean(trigger?.meta?.isPr) && Boolean(settings.github?.prReview?.enabled)
           if (isAutonomousTrigger) {
             outcome = {
               kind: 'accept',
               title: trigger?.text.split('\n')[0]?.slice(0, 60) || 'Autonomous Task',
               scope: 'autonomous',
               reason: `Autonomous trigger from ${trigger?.source}`,
+            }
+          } else if (isPrReview) {
+            const prNum = trigger?.meta?.number
+            const rawTitle = trigger?.text.split('\n')[0]?.replace(/^#\s*Pull Request Review:\s*/i, '').trim() || `PR #${prNum}`
+            outcome = {
+              kind: 'accept',
+              title: `Review PR #${prNum}: ${rawTitle}`.slice(0, 60),
+              scope: 'pr_review',
+              reason: `Pull request review for #${prNum}`,
             }
           } else if (explicit) {
             outcome = { kind: 'accept', ...named(candidate), scope: '', reason: 'A person addressed the agent' }

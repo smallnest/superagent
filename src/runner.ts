@@ -142,10 +142,11 @@ import { TimerStore } from './infra/timers.ts'
 import { WatcherEngine } from './infra/watchers.ts'
 import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
-import { agentLogin, pollNotifications } from './sources/github.ts'
+import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
+import { runPrVerification } from './infra/pr-verifier.ts'
 
 /** Where the loop keeps its own bookkeeping, beside the domain state. */
 const pollKey = 'github:poll'
@@ -191,7 +192,9 @@ class AgentExecutor implements Executor {
     maxWorkers: number
     site: { started(ticketId: string, assignmentId: string): void; reported(ticketId: string, report: { state: string; summary: string; question?: string | null }): void
       failed(ticketId: string, assignmentId: string, summary: string): void; interrupted(ticketId: string, assignmentId: string): void }
-    prompt: (ticket: Ticket, directory: string, branch?: string) => Promise<string>
+    prompt: (ticket: Ticket, directory: string, branch?: string, prVerification?: { passed: boolean; markdown: string }) => Promise<string>
+    repo?: FileRepositories
+    log?: (line: string) => void
   }) {}
 
   start(ticket: Ticket, assignment: Assignment): void {
@@ -253,15 +256,39 @@ class AgentExecutor implements Executor {
   }
 
   private async execute(ticket: Ticket, assignment: Assignment, controller: AbortController): Promise<void> {
-    const { settings, runner, stateDir, accounts, feishuCli, site } = this.options
+    const { settings, runner, stateDir, accounts, feishuCli, site, repo, log } = this.options
     const directory = ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
+    const trigger = repo?.triggers.get(ticket.origin.triggerId)
+    const isPrReview = Boolean(trigger?.meta?.isPr) || ticket.mandate.scope === 'pr_review'
+    const prNumber = typeof trigger?.meta?.number === 'number' ? trigger.meta.number : undefined
+
     try {
-      // Each ticket gets its own branch off the checkout's HEAD, so tickets never share a working tree or a branch.
+      // Each ticket gets its own branch off the checkout's HEAD, or checks out the PR head.
       const branch = ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
-      await prepareWorktree({ checkout: settings.checkout, directory, branch, signal: controller.signal })
+      await prepareWorktree({
+        checkout: settings.checkout,
+        directory,
+        branch,
+        prNumber: isPrReview ? prNumber : undefined,
+        repository: settings.github?.repository,
+        signal: controller.signal,
+      })
+
       if (settings.executor.prepare) await run('/bin/sh', ['-c', settings.executor.prepare], { env: this.variables(ticket, directory, branch), timeoutMs: 120_000 })
-      const prompt = await this.options.prompt(ticket, directory, branch)
-      const isAutonomous = ticket.mandate.strength === 'inferred'
+
+      // Execute automated local verification commands inside the checked-out PR worktree
+      let prVerification: { passed: boolean; markdown: string } | undefined
+      if (isPrReview && settings.github?.prReview?.verifyCommands?.length) {
+        prVerification = await runPrVerification({
+          cwd: directory,
+          commands: settings.github.prReview.verifyCommands,
+          timeoutSeconds: settings.github.prReview.verifyTimeoutSeconds,
+          signal: controller.signal,
+        })
+      }
+
+      const prompt = await this.options.prompt(ticket, directory, branch, prVerification)
+      const isAutonomous = ticket.mandate.strength === 'inferred' && !isPrReview
       const result = await runner.run({
         prompt,
         cwd: directory,
@@ -272,6 +299,34 @@ class AgentExecutor implements Executor {
         readOnly: isAutonomous,
       })
       const report = result.report ?? inferReport(result.finalText, result.ok)
+
+      // Handle Pull Request Actions (Merge, Close, Comment)
+      if (isPrReview && prNumber && settings.github) {
+        const textToAnalyze = `${result.finalText}\n${report.summary}`
+        const decisionMatch = /DECISION:\s*(MERGE|APPROVE|REQUEST_CHANGES|CLOSE)/i.exec(textToAnalyze)
+        const decision = decisionMatch ? decisionMatch[1]!.toUpperCase() : (report.state === 'ready' ? 'APPROVE' : 'REQUEST_CHANGES')
+
+        if (decision === 'MERGE' && settings.github.prReview?.autoMerge && (!prVerification || prVerification.passed)) {
+          const method = settings.github.prReview.mergeMethod ?? 'squash'
+          try {
+            await run(settings.github.cli, ['pr', 'merge', String(prNumber), `--${method}`, '--auto', '--repo', settings.github.repository])
+            await run(settings.github.cli, ['pr', 'comment', String(prNumber), '--repo', settings.github.repository, '-b',
+              `🤖 **SuperAgent Review Verdict: MERGED**\n\n${deliverable(report.summary)}\n\nAutomated local verification passed and code review approved.`]).catch(() => {})
+            log?.(`Merged PR #${prNumber} on ${settings.github.repository}`)
+          } catch (mergeErr: any) {
+            log?.(`Could not merge PR #${prNumber}: ${mergeErr.message}`)
+          }
+        } else if (decision === 'CLOSE') {
+          try {
+            await run(settings.github.cli, ['pr', 'close', String(prNumber), '--repo', settings.github.repository, '-c',
+              `🤖 **SuperAgent Review Verdict: CLOSED**\n\n${deliverable(report.summary)}`])
+            log?.(`Closed PR #${prNumber} on ${settings.github.repository}`)
+          } catch (closeErr: any) {
+            log?.(`Could not close PR #${prNumber}: ${closeErr.message}`)
+          }
+        }
+      }
+
       if (report.followupAfterSeconds && report.followupAfterSeconds > 0) {
         const timerStore = new TimerStore(stateDir)
         await timerStore.save({
@@ -393,14 +448,21 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     engine, settings, maxWorkers: settings.executor.maxWorkers, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
     repository: github?.repository ?? settings.checkout, agent: login, accounts, ...feishu ? { feishuCli: feishu.cli } : {},
     site,
-    prompt: async (ticket, directory, branch) => {
+    repo,
+    log,
+    prompt: async (ticket, directory, branch, prVerification) => {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
       const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
+      const isPrReview = Boolean(trigger?.meta?.isPr) || ticket.mandate.scope === 'pr_review'
+      const prNumber = typeof trigger?.meta?.number === 'number' ? trigger.meta.number : undefined
       // A text input is a note the Engine carries, such as a recovery note after a restart; a fresh turn has not read it.
       const notes = ticket.inputs.flatMap(input => input.kind === 'text' ? [input.text] : [])
-      const readOnly = ticket.mandate.strength === 'inferred'
-      return composePrompt({ ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
-        source, instructions: settings.prompts, branch, standing, notes, readOnly })
+      const readOnly = ticket.mandate.strength === 'inferred' && !isPrReview
+      return composePrompt({
+        ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
+        source, instructions: settings.prompts, branch, standing, notes, readOnly,
+        isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(github?.prReview?.autoMerge),
+      })
     },
   })
   // `syncChat` copies a chat's members into the allow list each round, so a person joins by joining the chat. The list
@@ -523,6 +585,26 @@ export async function runLoop(options: LoopOptions): Promise<void> {
           const result = engine.receive(trigger)
           if (result !== 'duplicate') log(`Received ${trigger.id} from ${trigger.actor.id} on ${trigger.threads[0]!.id}`)
         }
+
+        if (github.prReview?.enabled && github.prReview?.pollOpenPrs !== false) {
+          try {
+            const prTriggers = await pollOpenPullRequests({
+              cli: github.cli,
+              repository: github.repository,
+              agent: login,
+              signal,
+              seen: id => repo.getMeta<boolean>(id) === true,
+              mark: id => repo.setMeta(id, true),
+            })
+            for (const trigger of prTriggers) {
+              const result = engine.receive(trigger)
+              if (result !== 'duplicate') log(`Received PR review trigger for #${trigger.meta?.number} from ${trigger.actor.id}`)
+            }
+          } catch (prErr: any) {
+            if (!signal.aborted) log(`PR poll failed: ${prErr.message}`)
+          }
+        }
+
         since = round
         repo.setMeta(pollKey, since)
       }

@@ -158,3 +158,71 @@ export async function pollNotifications(input: {
   }
   return triggers
 }
+
+export const PullRequestItemSchema = z.looseObject({
+  number: z.number(),
+  title: z.string(),
+  body: z.string().nullish(),
+  author: UserSchema,
+  updatedAt: z.string().nullish(),
+  url: z.string().nullish(),
+  headRefName: z.string().nullish(),
+  headRepositoryOwner: z.looseObject({ login: z.string() }).nullish(),
+})
+export type PullRequestItem = z.infer<typeof PullRequestItemSchema>
+
+/**
+ * Polls currently open pull requests for `repository` and returns Triggers for new or updated PRs.
+ */
+export async function pollOpenPullRequests(input: {
+  cli: string
+  repository: string
+  agent: string
+  signal?: AbortSignal
+  seen: (id: string) => boolean
+  mark: (id: string) => void
+}): Promise<Trigger[]> {
+  let prs: PullRequestItem[] = []
+  try {
+    prs = await runJson<PullRequestItem[]>(input.cli, [
+      'pr', 'list',
+      '--repo', input.repository,
+      '--state', 'open',
+      '--json', 'number,title,body,author,updatedAt,url,headRefName,headRepositoryOwner',
+    ], { signal: input.signal })
+  } catch {
+    return []
+  }
+
+  const triggers: Trigger[] = []
+  for (const pr of prs) {
+    if (sameName(pr.author.login, input.agent)) continue
+    const at = pr.updatedAt ?? new Date().toISOString()
+    const prKey = key('github-pr-review', input.repository, String(pr.number), at)
+    if (input.seen(prKey)) continue
+
+    const url = pr.url ?? githubPage(input.repository, pr.number, true)
+    triggers.push({
+      id: prKey,
+      source: SOURCE,
+      threads: [githubThread(pr.number)],
+      actor: { source: SOURCE, id: pr.author.login },
+      human: isHumanLogin(pr.author) && !sameName(pr.author.login, input.agent),
+      addressed: 'mention',
+      at,
+      text: `# Pull Request Review: #${pr.number} ${pr.title}\n\nAuthor: @${pr.author.login}\nURL: ${url}\n\n${pr.body ?? ''}`,
+      channel: githubChannel(input.repository, pr.number, url),
+      url,
+      meta: {
+        number: pr.number,
+        isPr: true,
+        kind: 'pull_review',
+        repository: input.repository,
+        author: pr.author.login,
+        updatedAt: at,
+      },
+    })
+    input.mark(prKey)
+  }
+  return triggers
+}
