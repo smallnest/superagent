@@ -206,15 +206,15 @@ change.**
 - Seen 1× (2026-11-09).
 
 **A publish appears in the registry only after npm has finished processing it.**
-- 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and for the next
-  ~1.5 minutes the registry still served 0.4.0 and answered 404 for 0.4.1. A
-  second publish was started on that reading; the first had already been
-  accepted, and `time.modified` moved once processing finished.
+- 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and the registry
+  answered 404 for that version for the next ~1.5 minutes; a second publish was
+  started on that reading, though the first had been accepted. 0.4.2 took ~4.5
+  minutes to appear. `time.modified` moves once processing finishes.
 - Verify against the packument — `curl https://registry.npmjs.org/<name>` and
-  read `versions` and `dist-tags` — not `npm view <name>@<version>` seconds
-  after the upload. A second publish of the same version fails, so wait for the
-  first instead of resending it.
-- Seen 1× (2026-11-17).
+  read `versions` and `dist-tags`, or poll `/<name>/<version>` — not
+  `npm view <name>@<version>` seconds after the upload. A second publish of the
+  same version fails, so wait for the first instead of resending it.
+- Seen 2× (2026-11-17).
 
 **A credential in `~/.npmrc` is checked with `npm whoami` before it is trusted.**
 - 2026-11-17: `npm whoami` returned 401 in this checkout while `$NPM_TOKEN`
