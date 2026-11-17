@@ -191,6 +191,43 @@ guessed from the docs.**
   round ends; only the process shape that exits waits.
 - Seen 1× (2026-11-17).
 
+**A question the process exits before sending is never asked.**
+- 2026-11-17: the workflow sends its "要做吗" from `start` without awaiting it;
+  `poll --once` ended the round and aborted the run, killing the DM before it
+  left. The ticket was held and the operator was never asked.
+- The executor now counts pending asks and `idle()` waits for them; command
+  answers are tracked the same way. Any side effect started outside the round's
+  await chain races the exit.
+- Seen 1× (2026-11-17).
+
+**A recovery path goes through the same gate as a new start.**
+- 2026-11-17: `recover()` pushed a pending assignment straight into the free-slot
+  queue. An issue the operator had approved before a restart would have started
+  without asking again, and one still waiting would have skipped the gate. Both
+  now go through `dispatch`.
+- When adding a gate, find every path that dispatches work, and test the restart
+  path as well as the new one.
+- Seen 1× (2026-11-17).
+
+**A queue follows the work's order, not the API's.**
+- 2026-11-17: the eventbus issues run S1..S23 by title, but the plan puts Phase 0
+  first (`#2585`). The queue ranks a `[Phase 0]` title first and then the lowest
+  iid; iid order alone would have started with S1 and left the cleanup last.
+- The label says what may be worked; the order comes from the plan document, and
+  a reader can check it by reading `state/workflow/`.
+- Seen 1× (2026-11-17).
+
+**A long-lived branch is not a per-ticket worktree.**
+- 2026-11-17: dora-service keeps one development branch,
+  `personal/smallnest/eventbus-grpc-getpwafeeds`, which is ~600 commits away
+  from `release/test`. `executor.worktree: false` runs each turn in the checkout
+  on that branch; the test branch is a temporary branch from `release/test` with
+  the issue's commits cherry-picked, and `feature/server` is left alone until a
+  release.
+- One installation, one branch, one issue at a time: a per-ticket branch would
+  split the work and a whole-branch merge would carry unrelated changes.
+- Seen 1× (2026-11-17).
+
 ## Verification
 
 **A test that starts a real agent is opt-in, and says what it costs.**

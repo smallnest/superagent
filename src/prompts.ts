@@ -39,6 +39,10 @@ export interface PromptInput {
   prNumber?: number
   /** Whether auto-merging is permitted upon approval. */
   autoMergeAllowed?: boolean
+  /** A branch the ticket merges its request into, such as `release/test`; absent means a person merges it. */
+  mergeInto?: string
+  /** True when the ticket works in the installation checkout on its own long-lived branch, not a per-ticket worktree. */
+  shared?: boolean
 }
 
 /**
@@ -137,12 +141,18 @@ export function composePrompt(input: PromptInput): string {
     '',
     '## How to work',
     '',
-    `- Work only in this directory. It is a worktree of the repository on a new branch.`,
-    branch
-      ? `- Commit on the branch \`${branch}\`, which this directory is already on, and open a ${words.request} from it when done.`
-      : `- Put your branch under \`${branchPrefix}\` followed by a short name, and open a ${words.request} from it when done.`,
+    input.shared
+      ? '- Work only in this directory. It is the installation checkout on its long-lived development branch.'
+      : '- Work only in this directory. It is a worktree of the repository on a new branch.',
+    input.shared
+      ? `- Commit on the branch this checkout is already on, and open a ${words.request} from it when done; do not create a per-ticket branch.`
+      : branch
+        ? `- Commit on the branch \`${branch}\`, which this directory is already on, and open a ${words.request} from it when done.`
+        : `- Put your branch under \`${branchPrefix}\` followed by a short name, and open a ${words.request} from it when done.`,
     '- Run the tests the repository has. Do not claim a check passed unless you ran it.',
-    `- Do not merge the ${words.request}. A person merges it.`,
+    input.mergeInto
+      ? `- Merge the ${words.request} into \`${input.mergeInto}\` once your checks pass, so the test environment picks it up. Merge nothing into another branch.`
+      : `- Do not merge the ${words.request}. A person merges it.`,
     '- If the request needs a decision you cannot make, stop and ask one concrete question.',
     ...input.readOnly ? [
       '- Autonomous run mode: you may inspect, search, and run tests, but do NOT push commits or make permanent mutations.',

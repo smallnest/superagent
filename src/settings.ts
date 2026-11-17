@@ -27,6 +27,8 @@ const ExecutorSchema = z.object({
   prepare: z.string().default(''),
   /** Commands a ticket may not run. */
   blockedCommands: z.array(z.string()).default([]),
+  /** Whether each ticket gets its own worktree and branch. False runs in `checkout`, on its current branch. */
+  worktree: z.boolean().default(true),
 })
 
 const RuleSchema = z.object({
@@ -120,6 +122,24 @@ export const MrReviewSchema = z.object({
 
 export type MrReview = z.infer<typeof MrReviewSchema>
 
+/**
+ * The issue-by-issue workflow: propose one labeled issue, ask the operator in Feishu, run it only after a yes, and
+ * close it only after a second yes. The bot asks in a direct message to `user`.
+ */
+export const WorkflowSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Open issues with this label form the queue; the Phase 0 issue comes first, then iid ascending. */
+  label: z.string().min(1).default('superagent'),
+  /** The Feishu open id the bot asks, in a direct message. */
+  user: z.string().min(1),
+  /** The branch a ticket merges its request into, such as `release/test`; empty means a person merges it. */
+  mergeInto: z.string().default('release/test'),
+  /** Commands run in the ticket's worktree after the turn; their output joins the summary. */
+  verifyCommands: z.array(z.string()).default([]),
+})
+
+export type Workflow = z.infer<typeof WorkflowSchema>
+
 /** A host as `gitlab.host` names it: a DNS name or address, optionally with a port for a self-managed instance. */
 const HOST = /^[A-Za-z0-9.-]+(?::\d+)?$/
 /** A project path, subgroups included: `group/project` or `group/subgroup/project`. */
@@ -181,6 +201,8 @@ export const SettingsSchema = z.object({
     /** Merge request review, checkout, and verification settings. */
     mrReview: MrReviewSchema.optional(),
   }).optional(),
+  /** Issue-by-issue approval workflow, asked and confirmed in Feishu. */
+  workflow: WorkflowSchema.optional(),
   executor: ExecutorSchema.optional().transform(value => ExecutorSchema.parse(value ?? {})),
   policy: PolicySchema.optional().transform(value => PolicySchema.parse(value ?? {})),
   /** Who assesses a candidate and with what: the `claude` CLI, or a runner named here. */

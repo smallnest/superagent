@@ -121,6 +121,23 @@ export async function reply(cli: string, messageId: string, text: string, idempo
   await run(cli, ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', idempotencyKey], { signal })
 }
 
+/**
+ * Sends a new message as the bot: a direct message to `userId`, or into a chat. The idempotency key keeps a retried
+ * round from sending the same question twice.
+ */
+export async function sendMessage(
+  cli: string,
+  to: { userId?: string; chatId?: string },
+  text: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<{ chatId?: string; messageId?: string }> {
+  const target = to.chatId ? ['--chat-id', to.chatId] : ['--user-id', to.userId ?? '']
+  const result = await runJson<{ chat_id?: string; message_id?: string }>(cli,
+    ['im', '+messages-send', '--as', 'bot', ...target, '--markdown', text, '--idempotency-key', idempotencyKey], { signal })
+  return { ...result.chat_id ? { chatId: result.chat_id } : {}, ...result.message_id ? { messageId: result.message_id } : {} }
+}
+
 /** A small JSON reader for the event stream, which tolerates what other commands print before or between events. */
 export class EventReader {
   private rest = ''

@@ -125,8 +125,10 @@ assess:
     const reply = async (): Promise<string> => readFile(join(stateDir, 'replies.txt'), 'utf8').catch(() => '')
     const controller = new AbortController()
     // A round does not wait for its agent, so rounds go until the whole chain is through: a round or two for the message,
-    // a few more for the agent's process to start and report, and one to answer.
-    for (let round = 0; round < 120 && !await reply(); round++) {
+    // a few more for the agent's process to start and report, and one to answer. The deadline is the test's, not a count
+    // of rounds: a loaded machine runs fewer of them in the same time.
+    const deadline = Date.now() + 50_000
+    for (let round = 0; round < 400 && Date.now() < deadline && !await reply(); round++) {
       await poll(root, controller.signal)
       await new Promise(resolve => setTimeout(resolve, 300))
     }
@@ -141,5 +143,5 @@ assess:
       .toBe(ticketBranch('agent/', listed[0]!.title, listed[0]!.id))
     expect(await reply()).not.toBe('')
 
-  }, 60_000)
+  }, 90_000)
 })

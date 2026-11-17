@@ -92,8 +92,7 @@ export function todoTrigger(input: { todo: Todo; host: string; project: string; 
   }
 }
 
-/** A merge request as `GET /projects/:id/merge_requests` returns it. */
-export const MergeRequestSchema = z.looseObject({
+/** A merge request as `GET /projects/:id/merge_requests` returns it. */export const MergeRequestSchema = z.looseObject({
   iid: z.number(),
   title: z.string(),
   description: z.string().nullish(),
@@ -232,6 +231,63 @@ export async function mergeMergeRequest(input: {
 /** Closes a merge request without merging it. */
 export async function closeMergeRequest(input: { cli: string; host: string; project: string; iid: number; signal?: AbortSignal }): Promise<void> {
   await run(input.cli, apiArgs(input.host, `projects/${projectPath(input.project)}/merge_requests/${input.iid}`, [
+    '--method', 'PUT', '--field', 'state_event=close',
+  ]), { signal: input.signal })
+}
+
+/** An issue as `GET /projects/:id/issues` returns it. */
+export const IssueSchema = z.looseObject({
+  iid: z.number(),
+  title: z.string(),
+  description: z.string().nullish(),
+  state: z.string().nullish(),
+  web_url: z.string().nullish(),
+  updated_at: z.string().nullish(),
+  author: PersonSchema,
+  labels: z.array(z.string()).nullish(),
+})
+export type Issue = z.infer<typeof IssueSchema>
+
+/** The open issues carrying `label`, which is the workflow's queue. */
+export async function listOpenIssues(input: {
+  cli: string
+  host: string
+  project: string
+  label: string
+  signal?: AbortSignal
+}): Promise<Issue[]> {
+  return runJson<Issue[]>(input.cli, apiArgs(input.host,
+    `projects/${projectPath(input.project)}/issues?state=opened&labels=${encodeURIComponent(input.label)}&per_page=100`), { signal: input.signal })
+}
+
+/**
+ * Builds the Trigger the workflow proposes for one issue.
+ *
+ * It is `addressed: 'direct'`: the issue was chosen by the queue, not mentioned by someone, so the policy admits it as a
+ * direct request from its author.
+ */
+export function issueTrigger(input: { issue: Issue; host: string; project: string; agent: string }): Trigger {
+  const { issue, host, project, agent } = input
+  const username = issue.author?.username ?? ''
+  const url = issue.web_url ?? gitlabPage(host, project, issue.iid)
+  return {
+    id: key('gitlab-issue', project, String(issue.iid)),
+    source: SOURCE,
+    threads: [gitlabThread(project, issue.iid)],
+    actor: { source: SOURCE, id: username },
+    human: !isBot(issue.author) && !sameName(username, agent),
+    addressed: 'direct',
+    at: issue.updated_at ?? new Date().toISOString(),
+    text: `${issue.title}\n\n${issue.description ?? ''}`,
+    url,
+    channel: gitlabChannel(host, project, issue.iid, 'issue', url),
+    meta: { number: issue.iid, isPr: false, kind: 'issue', repository: project, host, author: username, workflow: true },
+  }
+}
+
+/** Closes an issue, which the operator confirmed in Feishu. */
+export async function closeIssue(input: { cli: string; host: string; project: string; iid: number; signal?: AbortSignal }): Promise<void> {
+  await run(input.cli, apiArgs(input.host, `projects/${projectPath(input.project)}/issues/${input.iid}`, [
     '--method', 'PUT', '--field', 'state_event=close',
   ]), { signal: input.signal })
 }

@@ -164,8 +164,9 @@ import { WatcherEngine } from './infra/watchers.ts'
 import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
-import { closeMergeRequest, gitlabLogin, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
-import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
+import { closeIssue, closeMergeRequest, gitlabLogin, issueTrigger, listOpenIssues, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
+import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
+import { WorkflowStore, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
 import { runPrVerification } from './infra/pr-verifier.ts'
@@ -208,6 +209,10 @@ class AgentExecutor implements Executor {
   private readonly active = new Map<string, AbortController>()
   /** Tickets whose turn waits for a free slot, oldest first. */
   private readonly pending: { ticket: Ticket; assignment: Assignment }[] = []
+  /** Workflow tickets whose turn waits for the operator's yes. */
+  private readonly held = new Map<string, { ticket: Ticket; assignment: Assignment }>()
+  /** The questions being sent, which a finishing run waits for so a DM is not cut off by its own exit. */
+  private readonly asks = new Set<Promise<void>>()
   private pumping = false
   constructor(private readonly options: {
     settings: Settings
@@ -221,6 +226,11 @@ class AgentExecutor implements Executor {
     maxWorkers: number
     site: { started(ticketId: string, assignmentId: string): void; reported(ticketId: string, report: { state: string; summary: string; question?: string | null }): void
       failed(ticketId: string, assignmentId: string, summary: string): void; interrupted(ticketId: string, assignmentId: string): void }
+    /** A held turn for one ticket, waiting for the operator's yes. */
+    workflow?: {
+      ask: (ticket: Ticket, trigger: Trigger) => Promise<void>
+      done: (ticket: Ticket, trigger: Trigger, summary: string) => Promise<void>
+    }
     prompt: (ticket: Ticket, directory: string, branch?: string, prVerification?: { passed: boolean; markdown: string }) => Promise<string>
     repo?: FileRepositories
     log?: (line: string) => void
@@ -229,11 +239,37 @@ class AgentExecutor implements Executor {
   start(ticket: Ticket, assignment: Assignment): void {
     // The ticket is marked running now, so a round records the start before any turn of it exists; the turn itself waits
     // for a free slot, so a burst of accepted messages does not start more agents than the operator allows.
-    const { site } = this.options
-    site.started(ticket.id, assignment.id)
+    this.options.site.started(ticket.id, assignment.id)
+    this.dispatch(ticket, assignment)
+  }
+
+  /** Holds a workflow ticket for the operator's yes, or queues the turn in the free slots. */
+  private dispatch(ticket: Ticket, assignment: Assignment): void {
+    const trigger = this.options.repo?.triggers.get(ticket.origin.triggerId)
+    if (this.options.workflow && trigger?.meta?.workflow === true) {
+      this.held.set(ticket.id, { ticket, assignment })
+      const ask = this.options.workflow.ask(ticket, trigger)
+        .catch(error => this.options.log?.(`Could not ask about ${ticket.id}: ${(error as Error).message}`))
+      this.asks.add(ask)
+      void ask.finally(() => { this.asks.delete(ask) })
+      return
+    }
     this.pending.push({ ticket, assignment })
     this.pump()
   }
+
+  /** Starts the held turn of a ticket the operator approved; false when this executor holds none. */
+  release(ticketId: string): boolean {
+    const held = this.held.get(ticketId)
+    if (!held) return false
+    this.held.delete(ticketId)
+    this.pending.push(held)
+    this.pump()
+    return true
+  }
+
+  /** Drops a held turn, such as one the operator declined. */
+  forget(ticketId: string): void { this.held.delete(ticketId) }
 
   deliver(): void {
     // A ticket runs one turn at a time; a message that arrives mid-turn is read at the next start.
@@ -250,7 +286,7 @@ class AgentExecutor implements Executor {
       if (assignment) this.options.site.interrupted(ticket.id, assignment.id)
     }
     for (const ticket of open) {
-      for (const assignment of ticket.assignments) if (assignment.state === 'pending') this.pending.push({ ticket, assignment })
+      for (const assignment of ticket.assignments) if (assignment.state === 'pending') this.dispatch(ticket, assignment)
     }
     this.pump()
   }
@@ -261,6 +297,7 @@ class AgentExecutor implements Executor {
   stop(ticket: Ticket): void {
     this.active.get(ticket.id)?.abort()
     this.active.delete(ticket.id)
+    this.held.delete(ticket.id)
     const waiting = this.pending.findIndex(item => item.ticket.id === ticket.id)
     if (waiting >= 0) this.pending.splice(waiting, 1)
     this.pump()
@@ -284,12 +321,12 @@ class AgentExecutor implements Executor {
     })
   }
 
-  /** Resolves when no turn runs and none waits for a slot, which a one-round process waits on before it exits. */
+  /** Resolves when no turn runs, none waits for a slot, and every question has gone out. */
   idle(): Promise<void> {
-    if (!this.active.size && !this.pending.length) return Promise.resolve()
+    if (!this.active.size && !this.pending.length && !this.asks.size) return Promise.resolve()
     return new Promise(resolve => {
       const timer = setInterval(() => {
-        if (this.active.size || this.pending.length) return
+        if (this.active.size || this.pending.length || this.asks.size) return
         clearInterval(timer)
         resolve()
       }, 50)
@@ -298,7 +335,10 @@ class AgentExecutor implements Executor {
 
   private async execute(ticket: Ticket, assignment: Assignment, controller: AbortController): Promise<void> {
     const { settings, runner, stateDir, accounts, site, repo, log } = this.options
-    const directory = ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
+    // A shared installation works on the checkout's own branch, which is the long-lived development branch: no worktree,
+    // no per-ticket branch, and one issue at a time.
+    const shared = settings.executor.worktree === false
+    const directory = shared ? settings.checkout : ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
     const trigger = repo?.triggers.get(ticket.origin.triggerId)
     const isPrReview = Boolean(trigger?.meta?.isPr) || ticket.mandate.scope === 'pr_review'
     const prNumber = typeof trigger?.meta?.number === 'number' ? trigger.meta.number : undefined
@@ -308,18 +348,20 @@ class AgentExecutor implements Executor {
 
     try {
       // Each ticket gets its own branch off the checkout's HEAD, or checks out the review's head.
-      const branch = ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
-      await prepareWorktree({
-        checkout: settings.checkout,
-        directory,
-        branch,
-        prNumber: isPrReview ? prNumber : undefined,
-        repository: source === 'gitlab' ? settings.gitlab?.project : settings.github?.repository,
-        ...source === 'gitlab' && settings.gitlab && prNumber !== undefined
-          ? { ref: `refs/merge-requests/${prNumber}/head`, remote: `https://${settings.gitlab.host}/${settings.gitlab.project}.git` }
-          : {},
-        signal: controller.signal,
-      })
+      const branch = shared ? undefined : ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
+      if (!shared && branch) {
+        await prepareWorktree({
+          checkout: settings.checkout,
+          directory,
+          branch,
+          prNumber: isPrReview ? prNumber : undefined,
+          repository: source === 'gitlab' ? settings.gitlab?.project : settings.github?.repository,
+          ...source === 'gitlab' && settings.gitlab && prNumber !== undefined
+            ? { ref: `refs/merge-requests/${prNumber}/head`, remote: `https://${settings.gitlab.host}/${settings.gitlab.project}.git` }
+            : {},
+          signal: controller.signal,
+        })
+      }
 
       if (settings.executor.prepare) await run('/bin/sh', ['-c', settings.executor.prepare], { env: this.variables(ticket, directory, branch), timeoutMs: 120_000 })
 
@@ -406,6 +448,12 @@ class AgentExecutor implements Executor {
       }
       await appendLog(directory, prompt, result.raw.slice(-20_000), report)
       site.reported(ticket.id, { state: report.state ?? (result.ok ? 'ready' : 'failed'), summary: report.summary, question: report.question ?? null })
+      // The workflow's summary and close question follow the report; a Feishu outage is a log line, not a lost turn.
+      const workflowTrigger = repo?.triggers.get(ticket.origin.triggerId)
+      if (this.options.workflow && workflowTrigger?.meta?.workflow === true) {
+        await this.options.workflow.done(ticket, workflowTrigger, report.summary)
+          .catch(error => log?.(`Could not report on ${ticket.id}: ${(error as Error).message}`))
+      }
     } catch (error) {
       site.failed(ticket.id, assignment.id, `The agent could not run: ${(error as Error).message}`)
     } finally {
@@ -415,12 +463,12 @@ class AgentExecutor implements Executor {
     }
   }
 
-  private variables(ticket: Ticket, directory: string, branch: string): Record<string, string> {
+  private variables(ticket: Ticket, directory: string, branch?: string): Record<string, string> {
     const trigger = ticket.origin
     return {
       SUPERAGENT_TICKET: ticket.id,
       SUPERAGENT_DIR: directory,
-      SUPERAGENT_BRANCH: branch,
+      SUPERAGENT_BRANCH: branch ?? '',
       SUPERAGENT_REPOSITORY: this.options.repository,
       SUPERAGENT_TRIGGER: trigger.triggerId,
       DSH_SUPERAGENT_DIR: directory,
@@ -477,6 +525,10 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const gitlab = settings.gitlab?.enabled ? settings.gitlab : undefined
   const feishu = settings.feishu?.enabled ? settings.feishu : undefined
   const twitter = settings.twitter?.enabled ? settings.twitter : undefined
+  const workflow = settings.workflow?.enabled ? settings.workflow : undefined
+  if (workflow && (!gitlab || !feishu)) throw new Error('The issue workflow asks in Feishu about GitLab issues; turn both Sources on.')
+  const workflowStore = workflow ? new WorkflowStore(settings.stateDir) : undefined
+  if (workflowStore) await workflowStore.init()
   if (!github && !gitlab && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
   const login = github ? await agentLogin(github.cli, signal) : gitlab ? await gitlabLogin(gitlab.cli, gitlab.host, signal) : ''
   const twitterBot = twitter ? await twitterAccount(twitter.cli, signal) : ''
@@ -530,12 +582,36 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       try { engine.assignmentInterrupted(ticketId, assignmentId) } catch (error) { log(`Could not recover ${ticketId}: ${(error as Error).message}`) }
     },
   }
-  const executor = new AgentExecutor({
+  // A workflow ticket is held until the operator says yes in Feishu; the ask and the summary are direct messages.
+  let executor!: AgentExecutor
+  const askAbout = async (ticket: Ticket, trigger: Trigger): Promise<void> => {
+    const iid = Number(trigger.meta.number)
+    const record = await workflowStore!.get(iid)
+    // An answer that arrived before a restart already approved this ticket; start it instead of asking again.
+    if (record?.phase === 'working') { executor.release(ticket.id); return }
+    await workflowStore!.save({ iid, ticketId: ticket.id, phase: 'waiting', at: new Date().toISOString() })
+    const title = trigger.text.split('\n')[0]!.trim()
+    if (!feishu || !workflow) return
+    await sendMessage(feishu.cli, { userId: workflow.user },
+      `**#${iid} ${title}**\n\n${trigger.url ?? ''}\n\n要做吗？回复 \`做 #${iid}\` 或 \`不做 #${iid}\`。`, `ask-${iid}`, signal)
+  }
+  const doneAbout = async (ticket: Ticket, trigger: Trigger, summary: string): Promise<void> => {
+    if (!workflow || !feishu || !workflowStore) return
+    const iid = Number(trigger.meta.number)
+    const directory = ticket.execution?.directory ?? join(settings.stateDir, 'work', ticket.id)
+    const checks = workflow.verifyCommands.length ? await runChecks(workflow.verifyCommands, directory, signal) : ''
+    await workflowStore.save({ iid, ticketId: ticket.id, phase: 'closing', at: new Date().toISOString() })
+    const title = trigger.text.split('\n')[0]!.trim()
+    await sendMessage(feishu.cli, { userId: workflow.user },
+      `**完成 #${iid}** ${title}\n\n${summary}\n\n${checks ? `**验证**\n${checks}\n\n` : ''}关闭吗？回复 \`关闭 #${iid}\` 或 \`保留 #${iid}\`。`, `summary-${iid}`, signal)
+  }
+  executor = new AgentExecutor({
     engine, settings, maxWorkers: settings.executor.maxWorkers, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
     repository, agent: login, accounts,
     site,
     repo,
     log,
+    ...workflow ? { workflow: { ask: askAbout, done: doneAbout } } : {},
     prompt: async (ticket, directory, branch, prVerification) => {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
       const source = trigger?.source === 'feishu' ? 'feishu' as const : trigger?.source === 'gitlab' ? 'gitlab' as const : 'github' as const
@@ -548,10 +624,71 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       return composePrompt({
         ticket, trigger, repository, agentLogin: login, branchPrefix: settings.branchPrefix,
         source, instructions: settings.prompts, branch, standing, notes, readOnly,
-        isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(autoMerge),
+        isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(autoMerge), mergeInto: workflow?.mergeInto,
+        shared: settings.executor.worktree === false,
       })
     },
   })
+  /** The operator's answer in Feishu: start, skip, close or keep the issue the workflow is on. */
+  const handleWorkflowCommand = async (command: Command): Promise<void> => {
+    if (!workflow || !feishu || !workflowStore || !gitlab) return
+    const record = await workflowStore.get(command.iid)
+    const say = (text: string, key: string): Promise<void> => sendMessage(feishu.cli, { userId: workflow.user }, text, key, signal)
+      .then(() => undefined)
+      .catch(error => { log(`Could not answer #${command.iid}: ${(error as Error).message}`) })
+    if (!record) { await say(`没有在等 #${command.iid} 的决定。`, `noop-${command.iid}-${Date.now()}`); return }
+    if (command.verb === 'do' && record.phase === 'waiting') {
+      await workflowStore.save({ ...record, phase: 'working', at: new Date().toISOString() })
+      if (!record.ticketId || !executor.release(record.ticketId)) log(`#${command.iid}: no held turn to start; the next round restarts it`)
+      return
+    }
+    if (command.verb === 'skip' && (record.phase === 'waiting' || record.phase === 'working')) {
+      await workflowStore.save({ ...record, phase: 'skipped', at: new Date().toISOString() })
+      if (record.ticketId) {
+        executor.forget(record.ticketId)
+        try { engine.stopTicket(record.ticketId, 'declined') } catch { /* the ticket already ended */ }
+      }
+      await say(`已跳过 #${command.iid}。`, `skip-${command.iid}`)
+      return
+    }
+    if (command.verb === 'close' && record.phase === 'closing') {
+      try {
+        await closeIssue({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: command.iid, signal })
+        await workflowStore.save({ ...record, phase: 'done', at: new Date().toISOString() })
+        await say(`已关闭 #${command.iid}。`, `close-${command.iid}`)
+      } catch (error) {
+        await say(`关闭 #${command.iid} 失败：${(error as Error).message}`, `close-failed-${command.iid}-${Date.now()}`)
+      }
+      return
+    }
+    if (command.verb === 'keep' && record.phase === 'closing') {
+      await workflowStore.save({ ...record, phase: 'done', at: new Date().toISOString() })
+      await say(`保留 #${command.iid}。`, `keep-${command.iid}`)
+      return
+    }
+    await say(`#${command.iid} 现在不接受这个决定。`, `state-${command.iid}-${Date.now()}`)
+  }
+  /** Proposes the next labeled issue when nothing waits for a yes, a turn, or a close. */
+  const proposeIssue = async (): Promise<void> => {
+    if (!workflow || !workflowStore || !gitlab) return
+    if (await workflowStore.active()) return
+    try {
+      const issues = await listOpenIssues({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, label: workflow.label, signal })
+      const seen = new Set((await workflowStore.all()).map(record => record.iid))
+      const next = nextIssue(issues, seen)
+      if (!next) return
+      await workflowStore.save({ iid: next.iid, phase: 'waiting', at: new Date().toISOString() })
+      const result = engine.receive(issueTrigger({ issue: next, host: gitlab.host, project: gitlab.project, agent: login }))
+      if (result !== 'duplicate') log(`Proposed issue #${next.iid}: ${next.title}`)
+    } catch (error) { if (!signal.aborted) log(`Could not read the issue queue: ${(error as Error).message}`) }
+  }
+  /** Commands being handled, which a finishing run waits for so their answer is not cut off by its own exit. */
+  const commands = new Set<Promise<unknown>>()
+  const track = (work: Promise<unknown>): void => {
+    const tracked = work.catch(() => undefined)
+    commands.add(tracked)
+    void tracked.finally(() => { commands.delete(tracked) })
+  }
   // `syncChat` copies a chat's members into the allow list each round, so a person joins by joining the chat. The list
   // grows in the Engine's memory only: a restart reads it from settings again and the sync adds them back.
   const admitted = new Set<string>()
@@ -591,7 +728,14 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const receive = (event: unknown): void => {
     void identity.then(bot => feishuTrigger(event, { botAppId: bot.appId, botId: bot.botId, chats, directMessages: feishu?.directMessages ?? true,
       onInvalid: error => log(`Ignored an event: ${error}`) }))
-      .then(trigger => { if (trigger) store(trigger) })
+      .then(trigger => {
+        if (!trigger) return
+        // The operator's answer to a workflow question is a direct message from the configured user, not a new request.
+        const command = workflow && trigger.meta?.direct === true && trigger.actor.id === workflow.user
+          ? workflowCommand(trigger.text) : undefined
+        if (command) { track(handleWorkflowCommand(command)); return }
+        store(trigger)
+      })
       .catch(error => { log(`Could not store an event: ${(error as Error).message}`) })
   }
   // A consumer runs for the whole round loop, not for one round: Feishu pushes a message to the stream, and a stream that
@@ -725,6 +869,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
           }
         }
       }
+      if (workflow) await proposeIssue()
       if (twitter) {
         try {
           const triggers = await searchTweets(twitter.cli, twitter.query, {
@@ -835,6 +980,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // alive, and the extra delivery posts the report it wrote instead of leaving it to the next cron run.
   if (options.once && options.finish) {
     await executor.idle()
+    await Promise.allSettled([...commands])
     deliver(engine, repo, delivered, log)
     await repo.flush()
     await send(channel, destinations, log, settings.attention, markSent)

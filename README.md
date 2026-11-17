@@ -119,6 +119,26 @@ One installation serves one forge: `github.enabled` and `gitlab.enabled` cannot 
 credentials and CLI shim bind to one account. A merge request triggers the same review prompt as a pull request, with
 GitLab's words and its `refs/merge-requests/<iid>/head` checkout.
 
+## The issue workflow
+
+`workflow` works through labeled GitLab issues one at a time, with the operator in the loop:
+
+```yaml
+workflow:
+  enabled: true
+  label: superagent          # open issues with this label are the queue
+  user: ou_...               # asked in a Feishu direct message
+  mergeInto: release/test    # what the ticket's request merges into
+  verifyCommands: ["./gradlew test"]
+executor:
+  worktree: false            # run in checkout on its long-lived branch, not a per-ticket worktree
+```
+
+The bot proposes the next labeled issue — a `[Phase 0]` title first, then the lowest iid — and asks. `做 #2585` starts
+the turn, `不做 #2585` drops it. When the turn ends the bot sends the summary and the output of `verifyCommands`, then asks
+`关闭 #2585` or `保留 #2585`; only `关闭` closes the issue. The next issue is proposed after that answer. Answers are read
+from the live Feishu stream, so run `superagent poll` continuously rather than one round at a time.
+
 ## Compare with dsh-superagent
 
 [`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md)（[中文版](docs/dsh-superagent-comparison.zh.md)）

@@ -27,6 +27,16 @@ describe('the prompt for a ticket', () => {
     expect(compose([])).not.toContain('## Team instructions')
   })
 
+  it('tells a shared checkout to commit on its own branch, not a per-ticket one', () => {
+    const text = composePrompt({
+      ticket: { id: 't3', title: 'Migrate an edge' } as never, trigger: undefined, repository: 'backend/dora-service',
+      agentLogin: 'agent', branchPrefix: 'personal/smallnest/eventbus-', instructions: '', shared: true, mergeInto: 'release/test',
+    })
+    expect(text).toContain('long-lived development branch')
+    expect(text).toContain('do not create a per-ticket branch')
+    expect(text).toContain('Merge the pull request into `release/test`')
+  })
+
   it('carries a note the Engine recorded, as quoted material, before the rules of work', () => {
     const text = composePrompt({ ticket: { id: 't1', title: 'Fix the heading' } as never, trigger: undefined, repository: 'alice/widget',
       agentLogin: 'agent', branchPrefix: 'agent/', instructions: '', notes: ['The host restarted during this ticket. Inspect the worktree first.'] })
