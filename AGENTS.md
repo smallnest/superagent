@@ -39,3 +39,19 @@ at the top of `LESSONS.md` to the last commit read.
 Each commit says why the change exists. When tests or a live run proved it,
 the body says what ran. When something was left untested, the body says that
 too — the next reader decides whether it matters.
+
+## Publishing
+
+- Bump `package.json` in its own commit, push it, then publish from a clean
+  tree.
+- `npm publish` returning `+ name@version` is not proof it is live: the
+  registry can answer 404 for that version for minutes (0.4.1 and 0.5.0 took
+  ~1.5, 0.4.2 ~4.5). Verify against `https://registry.npmjs.org/<name>` —
+  `versions` and `dist-tags`, or poll `/<name>/<version>`. Never resend the
+  same version; the second publish fails and the first was already accepted.
+- `npm whoami` decides which credential works. `~/.npmrc` may hold a stale
+  token while `$NPM_TOKEN` is valid; publish with
+  `--//registry.npmjs.org/:_authToken="$NPM_TOKEN"` when it is. Never put the
+  token in a log or a commit.
+- Install the published tarball into an empty directory and run its bin before
+  calling it released.
