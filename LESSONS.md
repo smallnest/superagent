@@ -178,6 +178,19 @@ guessed from the docs.**
   `runLoop` inside a test.
 - Seen 1× (2026-11-17).
 
+**A one-round process finishes what it started.**
+- 2026-11-17: `poll --once` exited at the end of its round while a merge
+  request's review turn was still fetching the head. Each cron run restarted
+  the turn and killed it again, so the work never completed; the live test
+  needed the long-running loop to merge one merge request.
+- A run that asks to `finish` now waits on `executor.idle()`, then delivers and
+  posts before exiting. Live: one `--once` run of 10 seconds received MR !2,
+  reviewed and squash-merged it and posted both notes; a second run posted
+  nothing.
+- A test that gates a turn does not ask to finish, so it still returns when the
+  round ends; only the process shape that exits waits.
+- Seen 1× (2026-11-17).
+
 ## Verification
 
 **A test that starts a real agent is opt-in, and says what it costs.**
@@ -262,12 +275,12 @@ change.**
 
 ## Open work these lessons name
 
-- `poll --once` exits at the end of its round while a turn is still running, so
-  a cron-driven installation restarts a turn that outlives the round forever.
-  The live merge request test needed the long-running loop to finish. The fix is
-  for a one-round run to wait for the turns it started.
 - A GitHub or Feishu live round after the outbox change: both paths use the same
   `send()`, and only GitLab has been run against a real account since.
+- `poll --once` now outlives its interval when a turn is long, and the state
+  directory has no lock, so cron runs can overlap. The real fix is a lock on the
+  state directory; until then the interval must be longer than a turn, or the
+  installation runs the long-running `poll`.
 
 **A publish appears in the registry only after npm has finished processing it.**
 - 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and the registry

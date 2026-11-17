@@ -141,6 +141,29 @@ describe('a GitLab to-do', () => {
     expect((await callsSeen()).match(/\/notes/g)).toHaveLength(1)
   }, 40_000)
 
+  it('finishes its turn and posts the answer in one run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'superagent-gitlab-'))
+    dirs.push(root)
+    const bin = join(root, 'bin')
+    const calls = await fakes(bin, { todos: [todo] })
+    initRepository(root)
+    const settings = SettingsSchema.parse({
+      stateDir: join(root, 'state'), checkout: root,
+      gitlab: { enabled: true, host: 'gitlab.example.com', project: 'acme/widgets', cli: join(bin, 'glab'), allowed: ['alice'] },
+      executor: { agent: 'codex', binary: join(bin, 'fake-agent'), maxWorkers: 1 },
+      assess: { binary: join(bin, 'no-assessor') },
+    })
+    const repo = new FileRepositories(settings.stateDir)
+    await repo.open()
+
+    // A one-round process without `finish` exits while the turn runs; with it, the turn ends and its report goes out.
+    await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true, finish: true })
+
+    const ticket = repo.tickets.list()[0]!
+    expect(ticket.ended?.outcome).toBe('completed')
+    expect(await readFile(calls, 'utf8')).toContain('projects/acme%2Fwidgets/issues/7/notes')
+  }, 40_000)
+
   it('ignores a project other than the one this installation watches', async () => {
     const root = await mkdtemp(join(tmpdir(), 'superagent-gitlab-'))
     dirs.push(root)

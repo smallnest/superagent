@@ -169,7 +169,7 @@ async function poll(dir: string, once: boolean): Promise<number> {
   process.on('SIGINT', () => controller.abort())
   const log = (line: string): void => { process.stdout.write(`${new Date().toISOString().slice(11, 19)} ${line}\n`) }
   try {
-    await runLoop({ settings, repo, signal: controller.signal, log, ...once ? { once: true } : {} })
+    await runLoop({ settings, repo, signal: controller.signal, log, ...once ? { once: true, finish: true } : {} })
     return 0
   } catch (error) {
     process.stderr.write(`${(error as Error).message}\n`)

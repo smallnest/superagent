@@ -154,8 +154,8 @@ pnpm install && pnpm build
 ln -sf "$PWD/bin/superagent.js" ~/.local/bin/superagent   # a directory on PATH
 ```
 
-Start the loop from that directory: `superagent poll` keeps running, and `superagent poll --once` runs one round, which
-is what a cron entry calls each minute.
+Start the loop from that directory: `superagent poll` keeps running, and `superagent poll . --once` runs one round,
+waits for the turns it started, posts their reports, and exits — which is what a cron entry calls each minute.
 
 `checkout` names the repository the tickets change, and `executor.agent` names the coding agent. The Sources are
 optional, but at least one must be on; `github` and `gitlab` cannot both be, because one installation serves one forge.

@@ -284,6 +284,18 @@ class AgentExecutor implements Executor {
     })
   }
 
+  /** Resolves when no turn runs and none waits for a slot, which a one-round process waits on before it exits. */
+  idle(): Promise<void> {
+    if (!this.active.size && !this.pending.length) return Promise.resolve()
+    return new Promise(resolve => {
+      const timer = setInterval(() => {
+        if (this.active.size || this.pending.length) return
+        clearInterval(timer)
+        resolve()
+      }, 50)
+    })
+  }
+
   private async execute(ticket: Ticket, assignment: Assignment, controller: AbortController): Promise<void> {
     const { settings, runner, stateDir, accounts, site, repo, log } = this.options
     const directory = ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
@@ -442,6 +454,9 @@ export interface LoopOptions {
   log: (line: string) => void
   /** Run one round and return, instead of waiting for the poll interval. */
   once?: boolean
+  /** With `once`, wait for the turns the round started and post what they reported: a process that exits first kills a
+   * long agent, and the next run restarts it. */
+  finish?: boolean
 }
 
 /**
@@ -480,6 +495,13 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const standing = await standingRules()
 
   const channel = outbox(repo)
+  const destinations = {
+    ...github ? { github: github.cli } : {},
+    ...gitlab ? { gitlab: { cli: gitlab.cli, host: gitlab.host } } : {},
+    ...feishu ? { feishu: feishu.cli } : {},
+    ...twitter ? { twitter: twitter.cli } : {},
+  }
+  const markSent = (id: string): void => { repo.setMeta(`outbox:${id}`, true) }
   const scope = sourceScope(settings)
   // Finished turns wait here for a round to record them, and wake the loop's idle wait so it happens at once.
   const decided = new WorkQueue<Decided>()
@@ -787,12 +809,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       // The report goes back to where the person asked before any other message, so the answer reads as the outcome.
       deliver(engine, repo, delivered, log)
       await repo.flush()
-      await send(channel, {
-        ...github ? { github: github.cli } : {},
-        ...gitlab ? { gitlab: { cli: gitlab.cli, host: gitlab.host } } : {},
-        ...feishu ? { feishu: feishu.cli } : {},
-        ...twitter ? { twitter: twitter.cli } : {},
-      }, log, settings.attention, id => repo.setMeta(`outbox:${id}`, true))
+      await send(channel, destinations, log, settings.attention, markSent)
       await repo.flush()
       await sync()
     } catch (error) {
@@ -813,6 +830,15 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       if (finished.ready() || decided.ready()) break
       left -= Date.now() - began
     }
+  }
+  // A one-round process finishes what it started: waiting for the turns keeps an agent that needs longer than a round
+  // alive, and the extra delivery posts the report it wrote instead of leaving it to the next cron run.
+  if (options.once && options.finish) {
+    await executor.idle()
+    deliver(engine, repo, delivered, log)
+    await repo.flush()
+    await send(channel, destinations, log, settings.attention, markSent)
+    await repo.flush()
   }
   // The stream starts with the first round, and a stream that ended starts again with the next one, so it lives past a round
   // on demand: a consumer the last round stops loses what Feishu pushes until another round starts. It ends with the whole
