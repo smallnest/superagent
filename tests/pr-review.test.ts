@@ -210,5 +210,6 @@ echo "DECISION: MERGE"
     expect(calls).toContain('pr list')
     expect(calls).toContain('pr merge 42 --squash --auto --repo acme/app')
     expect(calls).toContain('pr comment 42 --repo acme/app')
-  })
+    // The test polls its own deadline for ten seconds, so the test must outlive it; the default five killed the poll.
+  }, 30_000)
 })

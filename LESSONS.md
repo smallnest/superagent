@@ -153,13 +153,31 @@ guessed from the docs.**
 **A red in a full run is compared against the base before it is blamed on the
 change.**
 - 2026-11-17: the full suite left `tests/poll.test.ts` red ("the agent run is
-  recorded beside its worktree" — the log was empty) and once timed out
+  recorded beside its worktree" — no log yet) and once timed out
   `tests/pr-review.test.ts`. Both pass run alone, and a clean worktree at
   `969e797` fails `poll.test.ts` the same way in a full run, so neither
   belonged to the change being verified.
 - Run the failing file alone, then run it at the base in a separate worktree
   (`git worktree add <dir> HEAD`). A red that predates the change is reported
   with both runs; it is not folded into the commit as a known flake.
+- Seen 1× (2026-11-17).
+
+**A test waits for the state it checks, not for a duration.**
+- 2026-11-17: `tests/poll.test.ts` slept 400 ms for the agent's turn to
+  prepare a worktree and 300 ms for the log it writes, then read both. In a
+  full parallel run about half the runs lost that race and found no `log.md`;
+  each file passed alone.
+- It now waits on the things it asserts — the agent's start marker before
+  reading the worktree, the log entry before reading the log — through the
+  file's `until` helper. Five full runs after the change were green.
+- Pick the state the assertion needs, with a deadline longer than the work and
+  shorter than the test's own timeout.
+- Seen 1× (2026-11-17).
+
+**A test's own deadline fits inside the test's timeout.**
+- 2026-11-17: `tests/pr-review.test.ts` polled a 10 s deadline inside a test
+  with no timeout argument, so vitest's default 5 s ended it first. The test
+  now asks for 30 s and the poll keeps its 10 s.
 - Seen 1× (2026-11-17).
 
 ## Packaging and releases

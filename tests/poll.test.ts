@@ -76,12 +76,14 @@ describe('a poll round', () => {
 
     // The fake agent is a Codex stand-in: the Codex runner reads its last message file and the report file.
     await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true })
-    await new Promise(resolve => setTimeout(resolve, 400))
 
     const tickets = repo.tickets.list()
     expect(tickets).toHaveLength(1)
     expect(tickets[0]!.title).toContain('fix the typo')
     expect(tickets[0]!.mandate.actor.id).toBe('alice')
+    // The turn runs beside the round, so wait for the agent to begin rather than for a duration: its start proves the
+    // worktree the next assertions read is in place, however loaded the machine is.
+    await until(async () => (await readdir(bin)).some(name => name.startsWith('turns.')), 20_000)
 
     const triggers = [...repo.keys()].filter(name => name.startsWith('trigger:'))
     expect(triggers.length).toBeGreaterThan(0)
@@ -95,10 +97,11 @@ describe('a poll round', () => {
 
     // A second round records the report the agent wrote and ends the ticket with it.
     await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true })
-    await new Promise(resolve => setTimeout(resolve, 300))
     const ended = repo.tickets.list()[0]!
-    const log = await readFile(join(settings.stateDir, 'work', ended.id, '.superagent', 'log.md'), 'utf8').catch(() => '')
-    expect(log, 'the agent run is recorded beside its worktree').toContain('Fixed the typo.')
+    const log = join(settings.stateDir, 'work', ended.id, '.superagent', 'log.md')
+    // The turn writes its log as it ends, so wait for the entry itself instead of guessing how long the turn takes.
+    await until(async () => (await readFile(log, 'utf8').catch(() => '')).includes('Fixed the typo.'), 20_000)
+    expect(await readFile(log, 'utf8'), 'the agent run is recorded beside its worktree').toContain('Fixed the typo.')
   }, 30_000)
 
   it('ignores a mention from a login that is not allowed', async () => {
