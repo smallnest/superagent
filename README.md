@@ -138,3 +138,12 @@ is what a cron entry calls each minute.
 pnpm check                                     # typecheck, unit tests, build
 SUPERAGENT_LIVE=1 SUPERAGENT_AGENT=codex pnpm test   # also runs a real agent end to end
 ```
+
+## Lessons
+
+[`LESSONS.md`](LESSONS.md) keeps what already cost a second pass here — a
+setting shipped but read nowhere, a note written after the worker that needed
+it started, a doc line that claimed a test nobody ran — as rules with the
+commit or test that taught them. Read it before changing code; every task ends
+by adding a lesson, raising one's `Seen` count, or saying why it taught
+nothing.
