@@ -138,6 +138,20 @@ export async function sendMessage(
   return { ...result.chat_id ? { chatId: result.chat_id } : {}, ...result.message_id ? { messageId: result.message_id } : {} }
 }
 
+/**
+ * The recent messages of one chat, newest first, read through the bot.
+ *
+ * A workflow reads its direct messages this way instead of the event stream: the stream is one connection per app, and
+ * another host that holds it would stop every consumer here. The ask stores the chat id, so this is one call per round.
+ */
+export async function recentMessages(cli: string, chatId: string, signal?: AbortSignal, pageSize = 20): Promise<Array<{ messageId: string; senderId: string; text: string; at: string }>> {
+  const result = await runJson<{ messages?: Array<{ message_id?: string; content?: string; create_time?: string; sender?: { id?: string } }> }>(cli,
+    ['im', '+chat-messages-list', '--chat-id', chatId, '--as', 'bot', '--order', 'desc', '--page-size', String(pageSize)], { signal })
+  return (result.messages ?? []).flatMap(message => message.message_id && message.sender?.id
+    ? [{ messageId: message.message_id, senderId: message.sender.id, text: message.content ?? '', at: message.create_time ?? '' }]
+    : [])
+}
+
 /** A small JSON reader for the event stream, which tolerates what other commands print before or between events. */
 export class EventReader {
   private rest = ''

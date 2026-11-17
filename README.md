@@ -134,7 +134,7 @@ executor:
   worktree: false            # run in checkout on its long-lived branch, not a per-ticket worktree
 ```
 
-The bot proposes the next labeled issue — a `[Phase 0]` title first, then the lowest iid — and asks. `做 #2585` starts
+The bot proposes the next labeled issue — the oldest open one, since dependencies are lower-numbered — and asks. `做 #2585` starts
 the turn, `不做 #2585` drops it. When the turn ends the bot sends the summary and the output of `verifyCommands`, then asks
 `关闭 #2585` or `保留 #2585`; only `关闭` closes the issue. The next issue is proposed after that answer. Answers are read
 from the live Feishu stream, so run `superagent poll` continuously rather than one round at a time.

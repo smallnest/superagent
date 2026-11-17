@@ -165,7 +165,7 @@ import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
 import { closeIssue, closeMergeRequest, gitlabLogin, issueTrigger, listOpenIssues, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
-import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
+import { botIdentity, chatMembers, consumeEvents, feishuTrigger, recentMessages, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
 import { WorkflowStore, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
@@ -527,6 +527,9 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const twitter = settings.twitter?.enabled ? settings.twitter : undefined
   const workflow = settings.workflow?.enabled ? settings.workflow : undefined
   if (workflow && (!gitlab || !feishu)) throw new Error('The issue workflow asks in Feishu about GitLab issues; turn both Sources on.')
+  // A workflow answers are read from its direct chat each round, because an app allows one event connection and another
+  // host may hold it; with no group chat configured, the event stream has nothing else to read.
+  const listen = Boolean(feishu) && !(workflow && (feishu!.chats?.length ?? 0) === 0)
   const workflowStore = workflow ? new WorkflowStore(settings.stateDir) : undefined
   if (workflowStore) await workflowStore.init()
   if (!github && !gitlab && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
@@ -592,8 +595,10 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     await workflowStore!.save({ iid, ticketId: ticket.id, phase: 'waiting', at: new Date().toISOString() })
     const title = trigger.text.split('\n')[0]!.trim()
     if (!feishu || !workflow) return
-    await sendMessage(feishu.cli, { userId: workflow.user },
+    const sent = await sendMessage(feishu.cli, { userId: workflow.user },
       `**#${iid} ${title}**\n\n${trigger.url ?? ''}\n\n要做吗？回复 \`做 #${iid}\` 或 \`不做 #${iid}\`。`, `ask-${iid}`, signal)
+    // The direct chat's id is where the answer is read from, when the event stream is held by another host.
+    if (sent.chatId) repo.setMeta('workflow:dm', sent.chatId)
   }
   const doneAbout = async (ticket: Ticket, trigger: Trigger, summary: string): Promise<void> => {
     if (!workflow || !feishu || !workflowStore) return
@@ -678,9 +683,30 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       const next = nextIssue(issues, seen)
       if (!next) return
       await workflowStore.save({ iid: next.iid, phase: 'waiting', at: new Date().toISOString() })
-      const result = engine.receive(issueTrigger({ issue: next, host: gitlab.host, project: gitlab.project, agent: login }))
+      const result = engine.receive(issueTrigger({ issue: next, host: gitlab.host, project: gitlab.project }))
       if (result !== 'duplicate') log(`Proposed issue #${next.iid}: ${next.title}`)
     } catch (error) { if (!signal.aborted) log(`Could not read the issue queue: ${(error as Error).message}`) }
+  }
+  /**
+   * Reads the operator's direct chat for answers, which is the stream's fallback: an app allows one event connection, and
+   * another host holding it would leave this installation deaf. The chat id is the one the last question went to.
+   */
+  const pollWorkflowDm = async (): Promise<void> => {
+    if (!workflow || !feishu) return
+    const chatId = repo.getMeta<string>('workflow:dm')
+    if (!chatId) return
+    const seen = new Set(repo.getMeta<string[]>('workflow:dmSeen') ?? [])
+    try {
+      const messages = await recentMessages(feishu.cli, chatId, signal)
+      for (const message of [...messages].reverse()) {
+        if (seen.has(message.messageId)) continue
+        seen.add(message.messageId)
+        if (message.senderId !== workflow.user) continue
+        const command = workflowCommand(message.text)
+        if (command) await handleWorkflowCommand(command)
+      }
+      repo.setMeta('workflow:dmSeen', [...seen].slice(-300))
+    } catch (error) { if (!signal.aborted) log(`Could not read the workflow DM: ${(error as Error).message}`) }
   }
   /** Commands being handled, which a finishing run waits for so their answer is not cut off by its own exit. */
   const commands = new Set<Promise<unknown>>()
@@ -745,7 +771,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // round also ends its stream, or the process that started it never exits.
   const stopListening = new AbortController()
   if (options.once) caller.addEventListener('abort', () => stopListening.abort(), { once: true })
-  if (feishu) {
+  if (feishu && listen) {
     handle = consumeEvents({ cli: feishu.cli, signal: stopListening.signal,
       onMessage: receive,
       onListening: (started) => { handle = started },
@@ -788,7 +814,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   // Reads what the stream sent during a round, so a message that arrives while a round works is not lost. A consumer that
   // has not started yet answers at once, and the round goes on with what the state has.
   const pull = async (): Promise<void> => {
-    if (!feishu) return
+    if (!feishu || !listen) return
     // Bounded: a chat that keeps talking must not keep one round going, since the next round reads the rest.
     for (let lines = 0; lines < MAX_LINES && !signal.aborted; lines++) {
       // The `await` is first on purpose: `x && await y()` never calls `y` when `x` is true.
@@ -801,7 +827,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   while (!signal.aborted) {
     const round = new Date().toISOString()
     try {
-      if (feishu) identify()
+      if (feishu && listen) identify()
       // Ingested before the reload, so this round decides on a message that arrived during it; the next round sees the rest.
       ingest()
       await repo.reload()
@@ -869,7 +895,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
           }
         }
       }
-      if (workflow) await proposeIssue()
+      if (workflow) { await proposeIssue(); await pollWorkflowDm() }
       if (twitter) {
         try {
           const triggers = await searchTweets(twitter.cli, twitter.query, {

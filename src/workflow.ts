@@ -65,12 +65,11 @@ export function workflowCommand(text: string): Command | undefined {
   return verb && Number.isInteger(iid) && iid > 0 ? { verb, iid } : undefined
 }
 
-/** The next issue to propose: the Phase 0 issue first, then the lowest iid not yet proposed. */
-export function nextIssue<T extends { iid: number; title: string }>(issues: readonly T[], seen: ReadonlySet<number>): T | undefined {
-  const rank = (issue: T): number => (/^\[Phase 0\]/.test(issue.title) ? 0 : 1)
+/** The next issue to propose: the oldest one not yet proposed. Dependencies are lower-numbered, so they come first. */
+export function nextIssue<T extends { iid: number }>(issues: readonly T[], seen: ReadonlySet<number>): T | undefined {
   return [...issues]
     .filter(issue => !seen.has(issue.iid))
-    .sort((a, b) => rank(a) - rank(b) || a.iid - b.iid)[0]
+    .sort((a, b) => a.iid - b.iid)[0]
 }
 
 /**

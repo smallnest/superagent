@@ -266,8 +266,8 @@ export async function listOpenIssues(input: {
  * It is `addressed: 'direct'`: the issue was chosen by the queue, not mentioned by someone, so the policy admits it as a
  * direct request from its author.
  */
-export function issueTrigger(input: { issue: Issue; host: string; project: string; agent: string }): Trigger {
-  const { issue, host, project, agent } = input
+export function issueTrigger(input: { issue: Issue; host: string; project: string }): Trigger {
+  const { issue, host, project } = input
   const username = issue.author?.username ?? ''
   const url = issue.web_url ?? gitlabPage(host, project, issue.iid)
   return {
@@ -275,7 +275,7 @@ export function issueTrigger(input: { issue: Issue; host: string; project: strin
     source: SOURCE,
     threads: [gitlabThread(project, issue.iid)],
     actor: { source: SOURCE, id: username },
-    human: !isBot(issue.author) && !sameName(username, agent),
+    human: !isBot(issue.author),
     addressed: 'direct',
     at: issue.updated_at ?? new Date().toISOString(),
     text: `${issue.title}\n\n${issue.description ?? ''}`,

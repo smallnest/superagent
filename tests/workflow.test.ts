@@ -47,9 +47,8 @@ esac
 echo "lark $*" >> ${JSON.stringify(calls)}
 case "$*" in
   "config show"*) echo '{"appId":"cli_test"}' ;;
-  "event consume"*)
-    if [ -f ${JSON.stringify(event)} ]; then cat ${JSON.stringify(event)}; fi
-    sleep 300
+  "im +chat-messages-list"*)
+    if [ -f ${JSON.stringify(event)} ]; then cat ${JSON.stringify(event)}; else echo '{"messages":[]}'; fi
     ;;
   "im +messages-send"*) echo '{"chat_id":"oc_dm","message_id":"om_asked"}' ;;
   *) echo '{}' ;;
@@ -64,17 +63,15 @@ printf '{"summary":"Removed the dead addresses.","state":"ready","prs":[]}' > .s
   return { glab, lark, event }
 }
 
-/** A Feishu direct message from alice, as the event stream prints one. */
+/** A Feishu direct chat's recent messages, as the bot reads them. */
 function message(text: string): string {
   return JSON.stringify({
-    message_id: `om_${text.length}_${Date.now()}`,
-    chat_id: 'oc_dm',
-    chat_type: 'p2p',
-    sender_id: 'ou_alice',
-    sender_type: 'user',
-    content: text,
-    create_time: '1767200000000',
-    mentions: [],
+    messages: [{
+      message_id: `om_${text.length}_${Date.now()}`,
+      content: text,
+      create_time: '2026-01-01 00:00',
+      sender: { id: 'ou_alice' },
+    }],
   })
 }
 
@@ -165,15 +162,16 @@ describe('the issue workflow', () => {
 })
 
 describe('the workflow state', () => {
-  it('proposes the Phase 0 issue first, then the lowest iid', () => {
+  it('proposes the oldest issue first: dependencies are lower-numbered', () => {
     const issues = [
       { iid: 2551, title: 'A gRPC edge' },
       { iid: 2585, title: '[Phase 0] Cleanup' },
       { iid: 2560, title: 'Another gRPC edge' },
     ]
-    expect(nextIssue(issues, new Set())?.iid).toBe(2585)
-    expect(nextIssue(issues, new Set([2585]))?.iid).toBe(2551)
-    expect(nextIssue(issues, new Set([2585, 2551, 2560]))).toBeUndefined()
+    expect(nextIssue(issues, new Set())?.iid).toBe(2551)
+    expect(nextIssue(issues, new Set([2551]))?.iid).toBe(2560)
+    expect(nextIssue(issues, new Set([2551, 2560]))?.iid).toBe(2585)
+    expect(nextIssue(issues, new Set([2551, 2560, 2585]))).toBeUndefined()
   })
 
   it('reads the four answers and nothing else', () => {

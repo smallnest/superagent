@@ -209,12 +209,26 @@ guessed from the docs.**
   path as well as the new one.
 - Seen 1× (2026-11-17).
 
+**The queue's own choice is a person's act, not a bot message.**
+- 2026-11-17: an issue the queue proposed was ignored with reason `bot`. The
+  trigger marked itself non-human when the issue's author was the account the
+  agent acts as, which is the normal case here: 千寻 posts and commits as
+  `chaoyuepan`, and the issues are written by `chaoyuepan` too.
+- A Source's "not the agent's own message" rule exists to drop what the agent
+  wrote. A queue that the operator configured is the operator choosing, so
+  `issueTrigger` now marks every non-bot issue human; `addressed: 'direct'` says
+  who chose it.
+- Seen 1× (2026-11-17).
+
 **A queue follows the work's order, not the API's.**
-- 2026-11-17: the eventbus issues run S1..S23 by title, but the plan puts Phase 0
-  first (`#2585`). The queue ranks a `[Phase 0]` title first and then the lowest
-  iid; iid order alone would have started with S1 and left the cleanup last.
-- The label says what may be worked; the order comes from the plan document, and
-  a reader can check it by reading `state/workflow/`.
+- 2026-11-17: the first queue ranked a `[Phase 0]` title first and proposed `#2585`, the newest
+  issue. The operator expected the oldest: the issues are numbered in dependency
+  order (`#2552`–`#2556`, `#2558` and `#2560` all reference `#2548`–`#2551`, and
+  `#2585` references `#2557`), so ascending iid is the dependency order and the
+  Phase 0 cleanup belongs last, not first.
+- The label says what may be worked; the order comes from the issue numbers the
+  plan wrote. When a queue rule disagrees with the numbering, ask the operator
+  which one is the order.
 - Seen 1× (2026-11-17).
 
 **A long-lived branch is not a per-ticket worktree.**
