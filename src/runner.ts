@@ -20,8 +20,9 @@ function deliver(engine: Engine, repo: FileRepositories, delivered: Set<string>,
     delivered.add(`${ticket.id}@${report.at}`)
     const text = deliverable(String(report.summary))
     try {
-      engine.reply({ purpose: 'result', ticketId: ticket.id, text })
-      log(`Answered ticket ${ticket.id} in its conversation`)
+      const reply = engine.reply({ purpose: 'result', ticketId: ticket.id, text })
+      // An earlier run may have posted it already; the outbox knows, and says so instead of sending it again.
+      if (!reply.reused) log(`Answered ticket ${ticket.id} in its conversation`)
     } catch (error) {
       log(`Could not answer ticket ${ticket.id}: ${(error as Error).message}`)
     }
@@ -87,9 +88,12 @@ async function send(
   clis: { github?: string; gitlab?: { cli: string; host: string }; feishu?: string; twitter?: string },
   log: (line: string) => void,
   attentionConfig?: Settings['attention'],
+  /** Records that a message went out, so a later round or process does not post it again. */
+  sent?: (id: string) => void,
 ): Promise<void> {
   const quiet = isQuietHours(new Date(), attentionConfig?.quietHours)
   const present = await isUserPresent(attentionConfig?.idleSecondsThreshold)
+  const done = (message: OutboundMessage): void => { channel.withdraw(message.id); sent?.(message.id) }
   for (const message of channel.drain()) {
     if (message.channel.source === 'twitter') {
       const address = message.channel.address as { tweetUrl?: string; tweetId?: string }
@@ -98,6 +102,7 @@ async function send(
       try {
         await replyTweet(clis.twitter, address.tweetUrl, message.text)
         log(`Replied to tweet ${address.tweetUrl}`)
+        done(message)
       } catch (error) { log(`Could not reply to tweet ${address.tweetUrl}: ${(error as Error).message}`) }
       continue
     }
@@ -113,6 +118,7 @@ async function send(
       }
       try {
         await reply(clis.feishu, address.messageId!, message.text, message.id)
+        done(message)
       } catch (error) { log(`Could not answer in ${address.chatId}: ${(error as Error).message}`) }
       continue
     }
@@ -126,6 +132,7 @@ async function send(
         await replyNote({ cli: clis.gitlab.cli, host: address.host ?? clis.gitlab.host, project: address.project,
           iid: Number(address.number), kind, body: message.text })
         log(`Posted a note on ${url}`)
+        done(message)
       } catch (error) { log(`Could not post on ${url}: ${(error as Error).message}`) }
       continue
     }
@@ -135,6 +142,7 @@ async function send(
     try {
       await run(clis.github, ['api', `repos/${address.repository}/issues/${address.number}/comments`, '-f', `body=${message.text}`])
       log(`Posted a message on ${address.repository}#${address.number}`)
+      done(message)
     } catch (error) { log(`Could not post on ${address.repository}#${address.number}: ${(error as Error).message}`) }
   }
 }
@@ -169,16 +177,25 @@ const seenKey = (id: string) => `github:seen:${id}`
 /** Lines one round reads from the stream at most, so a chat that keeps talking does not hold a round open. */
 const MAX_LINES = 500
 
-/** A failed save of the last round must not stop the next one. */
-function outbox(): Outbox {
+/**
+ * The outbox of one run, plus the ids earlier runs already posted.
+ *
+ * A message goes out once, and a process that started later must know it: the id is deterministic
+ * (`key('reply', triggerId, text)`), but the map alone forgets it at exit, so `poll --once` from cron re-posted every
+ * ready report. The id of a posted message is kept in the state directory for the same reason the ticket is.
+ */
+function outbox(repo: FileRepositories): Outbox & { drain: () => OutboundMessage[]; sent: (id: string) => boolean } {
   const messages = new Map<string, OutboundMessage>()
+  const sentKey = (id: string) => `outbox:${id}`
+  const sent = (id: string): boolean => repo.getMeta<boolean>(sentKey(id)) === true
   return {
-    send: message => { if (!messages.has(message.id)) messages.set(message.id, message) },
-    status: id => messages.has(id) ? 'pending' : undefined,
+    send: message => { if (!messages.has(message.id) && !sent(message.id)) messages.set(message.id, message) },
+    status: id => messages.has(id) ? 'pending' : sent(id) ? 'sent' : undefined,
     withdraw: id => { messages.delete(id) },
-    /** Everything queued so far, for the caller to deliver in order. */
+    /** A caller posts what is waiting; the message stays until the post succeeds, so a failed one is retried next round. */
     drain: () => [...messages.values()].sort((a, b) => a.id.localeCompare(b.id)),
-  } as Outbox & { drain: () => OutboundMessage[] }
+    sent,
+  }
 }
 
 /**
@@ -462,7 +479,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   await writeEnvironment(accounts, settings.executor.blockedCommands)
   const standing = await standingRules()
 
-  const channel = outbox() as Outbox & { drain: () => OutboundMessage[] }
+  const channel = outbox(repo)
   const scope = sourceScope(settings)
   // Finished turns wait here for a round to record them, and wake the loop's idle wait so it happens at once.
   const decided = new WorkQueue<Decided>()
@@ -775,7 +792,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         ...gitlab ? { gitlab: { cli: gitlab.cli, host: gitlab.host } } : {},
         ...feishu ? { feishu: feishu.cli } : {},
         ...twitter ? { twitter: twitter.cli } : {},
-      }, log, settings.attention)
+      }, log, settings.attention, id => repo.setMeta(`outbox:${id}`, true))
       await repo.flush()
       await sync()
     } catch (error) {

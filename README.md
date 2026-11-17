@@ -136,7 +136,8 @@ Done and tested: the domain, file-backed state, the settings file, three agent r
 the GitHub notification poller, the GitLab Source (to-dos, merge request review and merge), the Feishu Source, worktree
 creation per ticket, the round loop, and delivery of the agent's report back to the conversation. The Feishu path is
 proven with a stand-in `lark-cli` and once end to end against a real Feishu bot; the GitLab path is proven with a
-stand-in `glab` and against the API's documented shapes, not yet against a live GitLab account.
+stand-in `glab` and on GitLab 19.4.3 (`gitlab.sitinai.com`): an issue to-do became a ticket and a note, and a merge
+request was reviewed, squash-merged and answered.
 
 ## Install once
 

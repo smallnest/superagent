@@ -133,9 +133,12 @@ describe('a GitLab to-do', () => {
     expect(recorded).toContain('projects/acme%2Fwidgets/issues/7/notes --method POST --raw-field body=')
     expect(recorded).toContain('body=Fixed the typo')
 
-    // The to-do stays pending on GitLab, so a round sees it again; the recorded id is what keeps it from a second ticket.
+    // The to-do stays pending on GitLab, so a round sees it again; the recorded id is what keeps it from a second ticket,
+    // and the outbox's posted id keeps the answer from going out again in a later round or process.
+    await round(settings, repo)
     await round(settings, repo)
     expect(repo.tickets.list()).toHaveLength(1)
+    expect((await callsSeen()).match(/\/notes/g)).toHaveLength(1)
   }, 40_000)
 
   it('ignores a project other than the one this installation watches', async () => {

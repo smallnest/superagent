@@ -154,16 +154,28 @@ guessed from the docs.**
   makes recovery necessary.
 - Seen 1× (2026-11-09).
 
-**A reply is idempotent only within one process.**
-- 2026-11-17: three separate `runLoop({ once: true })` calls in the GitLab test
-  posted the same ready report three times as notes. `Replies.answer` checks
-  `outbox.status(id)` for its "went out already" test, and each run builds a
-  fresh in-memory outbox in `src/runner.ts`, so the id is forgotten between
-  runs. A GitHub installation driven by `poll --once` from cron has the same
-  gap.
-- The id is stable (`key('reply', triggerId, text)`), so the fix is to remember
-  the ids that went out — in the state directory — or to deliver a report in the
-  run that recorded it.
+**A reply is posted once, in this process or the next.**
+- 2026-11-17: the outbox kept its messages in a map whose `drain()` returned
+  them without consuming, and `send()` never withdrew a posted one. A
+  long-running `poll` posted the same report every interval, and three separate
+  `runLoop` calls in the GitLab test posted it three times. The live GitLab run
+  showed the result note twice, 18 seconds apart.
+- `send()` now withdraws a message only after its post succeeds and records the
+  id in the state directory (`outbox:<id>`); `outbox.send` refuses an id already
+  sent, so a later process knows too. A failed post stays queued for the next
+  round.
+- Live after the fix: the missing reply went out once, and two more rounds
+  posted nothing.
+- Seen 2× (2026-11-17).
+
+**A stand-in proves the shape; a live account proves the rounds.**
+- 2026-11-17: the GitLab tests passed with a fake `glab`, and the first live
+  run still posted the result note twice and left a turn half-run under
+  `poll --once`. The fake answers in milliseconds, so neither the outbox's
+  repeated drain nor an exit during a turn showed.
+- Keep a live round in the record — the project, the issue and merge request,
+  what appeared — and run the process shape the operator uses, not only
+  `runLoop` inside a test.
 - Seen 1× (2026-11-17).
 
 ## Verification
@@ -250,12 +262,12 @@ change.**
 
 ## Open work these lessons name
 
-- Deliver a ready report once across separate `poll --once` runs: the outbox's
-  sent ids live in memory only (see "A reply is idempotent only within one
-  process").
-- Run one GitLab round against a real instance — `superagent setup gitlab`, then
-  `superagent poll --once` on a test project — and record what it proved. The
-  GitLab path has a stand-in `glab` only; GitHub and Feishu each had a live run.
+- `poll --once` exits at the end of its round while a turn is still running, so
+  a cron-driven installation restarts a turn that outlives the round forever.
+  The live merge request test needed the long-running loop to finish. The fix is
+  for a one-round run to wait for the turns it started.
+- A GitHub or Feishu live round after the outbox change: both paths use the same
+  `send()`, and only GitLab has been run against a real account since.
 
 **A publish appears in the registry only after npm has finished processing it.**
 - 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and the registry
