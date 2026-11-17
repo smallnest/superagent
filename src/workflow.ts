@@ -65,6 +65,57 @@ export function workflowCommand(text: string): Command | undefined {
   return verb && Number.isInteger(iid) && iid > 0 ? { verb, iid } : undefined
 }
 
+/** Reads `记住 #2585 <one rule>`; the rule is kept and loaded into every later ticket's prompt. */
+export function memoryCommand(text: string): { iid: number; text: string } | undefined {
+  const match = /^\s*记住\s*#?\s*(\d+)\s+(.+)$/.exec(text)
+  const iid = Number(match?.[1])
+  const body = match?.[2]?.trim()
+  return match && Number.isInteger(iid) && iid > 0 && body ? { iid, text: body } : undefined
+}
+
+/**
+ * The installation's memory: short rules a person wrote with `记住 #<iid> <text>`, loaded into every later ticket.
+ *
+ * The file is plain markdown a person can read and edit. A rule is one line, an identical line is not written twice, and
+ * the oldest lines go when the list passes its cap: a list that grows forever turns back into a transcript.
+ */
+export class MemoryStore {
+  constructor(private readonly stateDir: string) {}
+
+  /** The rules file, which a review step names so a person can edit it. */
+  file(): string { return join(this.dir(), 'rules.md') }
+  private dir(): string { return join(this.stateDir, 'memory') }
+  private reviewPath(): string { return join(this.dir(), 'reviewed.json') }
+
+  async rules(): Promise<string[]> {
+    const text = await readFile(this.file(), 'utf8').catch(() => '')
+    return text.split('\n').map(line => line.trim()).filter(line => line.startsWith('- '))
+  }
+
+  /** Adds one rule, dated; the newest `maxLines` are kept. Returns the rules as stored. */
+  async remember(line: string, maxLines: number, at = new Date()): Promise<string[]> {
+    await mkdir(this.dir(), { recursive: true })
+    const entry = `- ${at.toISOString().slice(0, 10)} ${line.replace(/\s+/g, ' ').trim()}`
+    const existing = await this.rules()
+    const next = (existing.includes(entry) ? existing : [...existing, entry]).slice(-maxLines)
+    await writeFile(this.file(), `${next.join('\n')}\n`, 'utf8')
+    return next
+  }
+
+  /** True when the rules have not been read back by a person for `days`. */
+  async dueForReview(days: number): Promise<boolean> {
+    try {
+      const { at } = JSON.parse(await readFile(this.reviewPath(), 'utf8')) as { at: string }
+      return Date.now() - Date.parse(at) >= days * 86_400_000
+    } catch { return true }
+  }
+
+  async markReviewed(at = new Date()): Promise<void> {
+    await mkdir(this.dir(), { recursive: true })
+    await writeFile(this.reviewPath(), JSON.stringify({ at: at.toISOString() }), 'utf8')
+  }
+}
+
 /** The next issue to propose: the oldest one not yet proposed. Dependencies are lower-numbered, so they come first. */
 export function nextIssue<T extends { iid: number }>(issues: readonly T[], seen: ReadonlySet<number>): T | undefined {
   return [...issues]

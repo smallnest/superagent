@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { SettingsSchema } from '../src/settings.ts'
 import { FileRepositories } from '../src/state/files.ts'
 import { runLoop } from '../src/runner.ts'
-import { WorkflowStore, nextIssue, workflowCommand } from '../src/workflow.ts'
+import { WorkflowStore, MemoryStore, memoryCommand, nextIssue, workflowCommand } from '../src/workflow.ts'
 
 const dirs: string[] = []
 afterAll(async () => { await Promise.all(dirs.map(dir => rm(dir, { recursive: true, force: true }))) })
@@ -181,5 +181,24 @@ describe('the workflow state', () => {
     expect(workflowCommand('保留 #42')).toEqual({ verb: 'keep', iid: 42 })
     expect(workflowCommand('做 #2585 顺便看下日志')).toBeUndefined()
     expect(workflowCommand('好的')).toBeUndefined()
+  })
+
+  it('reads a rule and keeps the memory short, newest last, with no duplicate line', async () => {
+    expect(memoryCommand('记住 #2551 gRPC 大包必须调 HTTP/2 窗口')).toEqual({ iid: 2551, text: 'gRPC 大包必须调 HTTP/2 窗口' })
+    expect(memoryCommand('记一下 #2551')).toBeUndefined()
+    expect(memoryCommand('做 #2551')).toBeUndefined()
+
+    const root = await mkdtemp(join(tmpdir(), 'superagent-memory-'))
+    dirs.push(root)
+    const memory = new MemoryStore(root)
+    await memory.remember('rule one', 2, new Date('2026-01-01T00:00:00Z'))
+    await memory.remember('rule two', 2, new Date('2026-01-02T00:00:00Z'))
+    await memory.remember('rule two', 2, new Date('2026-01-02T00:00:00Z'))
+    expect(await memory.rules()).toEqual(['- 2026-01-01 rule one', '- 2026-01-02 rule two'])
+    await memory.remember('rule three', 2, new Date('2026-01-03T00:00:00Z'))
+    expect(await memory.rules()).toEqual(['- 2026-01-02 rule two', '- 2026-01-03 rule three'])
+    expect(await memory.dueForReview(7)).toBe(true)
+    await memory.markReviewed(new Date())
+    expect(await memory.dueForReview(7)).toBe(false)
   })
 })

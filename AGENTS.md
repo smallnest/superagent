@@ -26,6 +26,19 @@ does.
 When a review covers a stretch of commits, move the `reviewed-through:` marker
 at the top of `LESSONS.md` to the last commit read.
 
+## Memory
+
+`LESSONS.md` is the rulebook read before a change. Keep it under about 220
+lines: delete a rule that no longer holds, merge the ones that say the same
+thing, and cut a story back to its sentence. A rule seen three times moves into
+this file.
+
+The issue workflow also keeps a memory per installation: `记住 #<iid> <one
+line>` in Feishu appends to `state/memory/rules.md`, which every ticket prompt
+carries, capped by `workflow.memoryLines`. The bot sends the list back every
+`workflow.reviewDays` so a person can delete what is wrong — an unreviewed rule
+is followed more faithfully than any instruction typed later.
+
 ## Checks
 
 - `pnpm check` — typecheck, unit tests, build. This is the default before a

@@ -2,10 +2,10 @@
 # Lessons from this repository's work
 
 superagent is a small repository where agents write most of the code. Most of
-what goes wrong here has already gone wrong once: a setting that was shipped
-but read nowhere, a note written after the worker that needed it had started, a
-doc line that claimed a test nobody ran. This file keeps those occasions as
-rules — the rule, why it holds, and the commit, test or run that showed it.
+what goes wrong here has already gone wrong once: a setting shipped but read
+nowhere, a note written after the worker that needed it started, a doc line that
+claimed a test nobody ran. This file keeps those occasions as rules — the rule,
+why it holds, and the commit, test or run that showed it.
 
 Read this before changing code. Add to it before you finish.
 
@@ -13,341 +13,217 @@ Read this before changing code. Add to it before you finish.
 
 - A lesson is a rule someone can follow, then the thing that taught it. The
   evidence keeps the rule from drifting into general advice.
-- `Seen N×` counts separate tasks, not repetitions of one incident. A rule seen
-  three times moves into [AGENTS.md](AGENTS.md), so its check runs where the
-  work already runs.
-- Add a lesson when a task needed a second pass, a test went red for a reason
-  no test named, a review found a hole the author had missed, or a commit or
-  doc claimed more than was run.
-- Do not add general good practice ("write tests", "keep functions small").
-  Only what this repository paid for.
-- Every task ends with one of three things in its commit body: a new lesson, a
-  raised `Seen`, or `No new lesson: <reason>`.
+- `Seen N×` counts separate tasks. A rule seen three times moves into
+  [AGENTS.md](AGENTS.md), so its check runs where the work already runs.
+- Add a lesson when a task needed a second pass, a test went red for a reason no
+  test named, or a commit or doc claimed more than was run. Not general advice.
+- Every task ends with a new lesson, a raised `Seen`, or `No new lesson: <reason>`.
+- Keep this file under about 220 lines: delete a rule that no longer holds,
+  merge the ones that say the same thing, cut a story to its sentence.
 - When you review a stretch of commits, move the `reviewed-through:` marker at
   the top to the last commit you read.
 
 ## Read what you were given
 
 **A setting is wired and proven before it ships.**
-- `01cdaf7`: `executor.maxWorkers` sat in the settings schema and did nothing,
-  so a burst of accepted messages started one agent per message. The fix added
-  a queue and a test that starts two tickets with `maxWorkers: 1` and checks
-  the second turn starts only when the first ends (`tests/poll.test.ts`).
+- `01cdaf7`: `executor.maxWorkers` sat in the schema and did nothing, so a burst
+  of accepted messages started one agent per message. The fix added a queue and
+  a test that starts two tickets with `maxWorkers: 1` and checks the second turn
+  starts only when the first ends (`tests/poll.test.ts`).
 - A settings test that parses the number proves the parser, not the limit.
-  Read the value where the work consumes it, and test that place.
 - Seen 1× (2026-11-09).
 
 **One setting has one schema.**
 - `src/settings.ts:23` defaults `maxWorkers` to 1 and is what every command
-  reads. `src/core/policy.ts:93` also carried an `ExecutorConfigSchema`
+  reads; `src/core/policy.ts:93` also carried an `ExecutorConfigSchema`
   defaulting to 3, imported by nothing. A reader who picked the wrong copy
   changed behaviour silently.
-- The copy was not one field: `policy`, `eval`, `executor` and `sources` were
-  all rebuilt beside the live schema, and the two modules it alone imported
-  (`src/core/limits.ts`, `src/core/admission.ts`) existed only for it. All of
-  it went on 2026-11-17; `src/core/policy.ts` keeps the assessment schemas
-  `src/assess.ts` uses and nothing else.
-- When a setting moves, delete the old copy and whatever only it uses in the
-  same commit. A schema nothing imports is not documentation; its defaults are
-  a second answer.
+- The copy was the whole `policy`/`eval`/`executor`/`sources` set, plus the two
+  modules only it used (`src/core/limits.ts`, `src/core/admission.ts`). All of it
+  went on 2026-11-17; `core/policy.ts` keeps only the assessment schemas.
+- Delete the old copy and whatever only it uses in the same commit.
 - Seen 2× (2026-11-17).
 
 **A test that is documented is the test that ran.**
-- `08ba7ca` wrote "the Feishu path was tested from Feishu" into the README.
-  What happened was one live run through a real bot, not a test; `9dff1d1`
-  rewrote the line to say exactly that.
-- Write the run: what was started, against which account, on what date. When
-  there was no run, say "not tested".
+- `08ba7ca` wrote "the Feishu path was tested from Feishu"; it was one live run
+  through a real bot, not a test, and `9dff1d1` rewrote it.
+- Write the run — what, against which account, on what date — or say "not tested".
 - Seen 1× (2026-11-08).
 
-**External ids and event keys are read from the CLI or the API, never
-guessed from the docs.**
-- `6692d0d`: the Feishu event key was not the one the bot's app subscribes to,
-  so no message arrived. `8130f82`: the bot's open id was read from somewhere
-  other than the listened chats. `ec6afe5` then read it once per run instead of
-  per message.
-- `gh` and `lark-cli` already know the answer; `superagent setup` exists so a
-  person does not copy ids from a web page (README, "Use").
-- A guess here passes every unit test and fails only with a real account.
+**External ids and event keys are read from the CLI or the API, never guessed.**
+- `6692d0d`: the Feishu event key was not the one the app subscribes to, so no
+  message arrived. `8130f82`: the bot's open id came from the wrong place;
+  `ec6afe5` read it once per run instead of per message.
+- `gh` and `lark-cli` know the answer; `superagent setup` exists so a person does
+  not copy ids from a web page. A guess passes every unit test and fails live.
 - Seen 1× (2026-11-08).
 
 **A second forge is a second event shape, not a rename of the first.**
-- 2026-11-17: the GitLab Source (`src/sources/gitlab.ts`) reads `/todos`, which
-  carries the note's text, its author and the issue or merge request's iid in
-  one response. GitHub's notification carries only a link and needs a second
-  call for the comment (`src/sources/github.ts`). Copying the GitHub shape
-  would have fetched every note twice.
-- The same holds for the review checkout: a merge request's head is
-  `refs/merge-requests/<iid>/head`, a pull request's is `pull/<n>/head`.
-- Read the new forge's own event and name its pieces in `meta`; keep the
-  domain's `Trigger` unchanged.
+- 2026-11-17: GitLab's `/todos` carries the note, its author and the issue or
+  merge request's iid in one response; GitHub's notification needs a second call
+  for the comment. The review head differs too: `refs/merge-requests/<iid>/head`
+  against `pull/<n>/head`.
+- Read the new forge's own event and name its pieces in `meta`.
 - Seen 1× (2026-11-17).
 
 **One rule with two homes is enforced by the schema, not the docs.**
 - 2026-11-17: one installation serves one forge, because the worker's git
   credential helper and CLI shim bind to one account. `SettingsSchema` refuses
-  `github.enabled` and `gitlab.enabled` together, so `superagent init`, `setup`
-  and a hand-edited file all say the same thing.
-- The check belongs where the value is parsed; a sentence in README is found
-  only by whoever reads it before the mistake.
+  both, so `init`, `setup` and a hand-edited file say the same thing.
+- The check belongs where the value is parsed; README is read only by whoever
+  reads it before the mistake.
 - Seen 1× (2026-11-17).
 
 **A schema default cannot be told from a value the operator wrote.**
-- 2026-11-17: `gitlab.host` defaults to `gitlab.com`, so `superagent setup
-  gitlab` on a self-managed checkout kept `gitlab.com` and talked to the wrong
-  instance. It now treats the default as unset and takes the checkout's origin
-  when the host is still `gitlab.com`.
-- When a setup step derives a value that has a default, ask whether the default
-  means "unset" and prefer the stronger signal — here the remote — until a
-  person writes something else.
+- 2026-11-17: `gitlab.host` defaults to `gitlab.com`, so `setup gitlab` on a
+  self-managed checkout kept `gitlab.com`. It now treats the default as unset and
+  takes the origin when the host is still `gitlab.com`.
+- When a step derives a value that has a default, prefer the stronger signal
+  until a person writes something else.
 - Seen 1× (2026-11-17).
 
 ## Order of what runs
 
 **Anything the work must read is in place before the call that starts it.**
-- `01cdaf7`: `Tickets.restart` wrote the recovery note after the new
-  assignment had been dispatched, so the worker never received it. The note now
-  joins the inputs before dispatch, and the turned-over assignment is stopped.
-- The same commit gave a fresh turn no session to read a note in, so the note
-  became a prompt input under "Notes since the start" and every turn's log
-  keeps its prompt.
+- `01cdaf7`: `Tickets.restart` wrote the recovery note after dispatch, so the
+  worker never received it. The note now joins the inputs before dispatch.
 - A write after the start is a race with the reader, not a second step.
 - Seen 1× (2026-11-09).
 
 **Pass an optional argument where the decision is made, not after a spread.**
-- `a9ed1d7`: `site` was passed after an optional spread, so it landed only in
-  the spread's true branch. A turn's report was never recorded when Feishu was
-  off — the one configuration the tests did not run.
-- Build the call's arguments in one place, or set the value in both branches.
-  Then run the test with the optional absent.
+- `a9ed1d7`: `site` was passed after an optional spread, so it landed only in the
+  true branch; a turn's report was never recorded when Feishu was off.
+- Build the arguments in one place, and run the test with the optional absent.
 - Seen 1× (2026-11-09).
 
 **A shared log is appended to; it is never read back and rewritten.**
 - `01cdaf7`: a turn log rewrote the file after reading it, so two turns of one
-  ticket could lose an entry. It now appends one entry per turn
-  (`src/runner.ts:379`).
-- A stream can end several turns of one ticket at once; the file is written by
-  whichever turn finishes, in any order.
+  ticket could lose an entry. It appends one entry per turn (`run.ts:379`).
 - Seen 1× (2026-11-09).
 
 **A library does not end the process that embeds it.**
-- `01cdaf7`: a single round called `process.exit`, and VITEST embeds the loop
-  in the test process, so a test would have taken the suite down with it.
-- The exit now sits in one gated place (`src/runner.ts:728`) and `bin/` owns
-  the real process. A new entry point that ends a round inherits both rules.
+- `01cdaf7`: a single round called `process.exit`, and VITEST embeds the loop in
+  the test process. The exit now sits in one gated place (`run.ts:728`).
 - Seen 1× (2026-11-09).
 
-**A ticket owns its worktree.**
-- `339603c` raised `maxWorkers` to 5 because each ticket already had its own
-  worktree, branch and directory. Nothing is shared between tickets except the
-  state files, which are written per ticket.
-- Raising a concurrency limit is only safe after naming what the workers share.
-  Here: the executor queue, the state files and the delivery Source.
-- Seen 1× (2026-11-08).
-
 **A restart continues the ticket; it does not make a new one.**
-- `01cdaf7`: a ticket whose agent died with the process stayed `running`
-  forever, because no turn came back to report. At start, the loop now hands
-  every active ticket on disk to the executor, which marks the left-running
-  assignment interrupted and restarts it through the Engine in the same queue.
-- Disk state is the truth. An in-memory flag cannot survive the crash that
-  makes recovery necessary.
+- `01cdaf7`: a ticket whose agent died stayed `running` forever. At start, the
+  loop hands every active ticket on disk to the executor, which marks the
+  left-running assignment interrupted and restarts it through the Engine.
+- Disk state is the truth; an in-memory flag cannot survive the crash.
 - Seen 1× (2026-11-09).
 
 **A reply is posted once, in this process or the next.**
-- 2026-11-17: the outbox kept its messages in a map whose `drain()` returned
-  them without consuming, and `send()` never withdrew a posted one. A
-  long-running `poll` posted the same report every interval, and three separate
-  `runLoop` calls in the GitLab test posted it three times. The live GitLab run
-  showed the result note twice, 18 seconds apart.
-- `send()` now withdraws a message only after its post succeeds and records the
-  id in the state directory (`outbox:<id>`); `outbox.send` refuses an id already
-  sent, so a later process knows too. A failed post stays queued for the next
-  round.
-- Live after the fix: the missing reply went out once, and two more rounds
-  posted nothing.
+- 2026-11-17: `drain()` returned messages without consuming them and `send()`
+  never withdrew a posted one, so a long-running `poll` posted the same report
+  every interval; the live GitLab run showed it twice, 18 seconds apart.
+- `send()` now withdraws after a successful post and records `outbox:<id>` in
+  state; `outbox.send` refuses an id already sent. A failed post stays queued.
 - Seen 2× (2026-11-17).
 
 **A stand-in proves the shape; a live account proves the rounds.**
-- 2026-11-17: the GitLab tests passed with a fake `glab`, and the first live
-  run still posted the result note twice and left a turn half-run under
-  `poll --once`. The fake answers in milliseconds, so neither the outbox's
-  repeated drain nor an exit during a turn showed.
-- Keep a live round in the record — the project, the issue and merge request,
-  what appeared — and run the process shape the operator uses, not only
-  `runLoop` inside a test.
+- 2026-11-17: the GitLab tests passed with a fake `glab`, and the live run still
+  posted a note twice and left a turn half-run under `poll --once`.
+- Keep the live round in the record, and run the process shape the operator uses.
 - Seen 1× (2026-11-17).
 
 **A one-round process finishes what it started.**
-- 2026-11-17: `poll --once` exited at the end of its round while a merge
-  request's review turn was still fetching the head. Each cron run restarted
-  the turn and killed it again, so the work never completed; the live test
-  needed the long-running loop to merge one merge request.
-- A run that asks to `finish` now waits on `executor.idle()`, then delivers and
-  posts before exiting. Live: one `--once` run of 10 seconds received MR !2,
-  reviewed and squash-merged it and posted both notes; a second run posted
-  nothing.
-- A test that gates a turn does not ask to finish, so it still returns when the
-  round ends; only the process shape that exits waits.
+- 2026-11-17: `poll --once` exited while a review turn was fetching the head;
+  every cron run restarted and killed it, so the work never finished.
+- A run that asks to `finish` waits on `executor.idle()`, then delivers and posts.
+  Live: one 10-second run merged MR !2 and posted both notes.
+- The exit sits in one gated place and `bin/` owns the process: a library must
+  not end the process that embeds it (`01cdaf7`, VITEST embeds the loop).
 - Seen 1× (2026-11-17).
 
 **A question the process exits before sending is never asked.**
-- 2026-11-17: the workflow sends its "要做吗" from `start` without awaiting it;
-  `poll --once` ended the round and aborted the run, killing the DM before it
-  left. The ticket was held and the operator was never asked.
-- The executor now counts pending asks and `idle()` waits for them; command
-  answers are tracked the same way. Any side effect started outside the round's
-  await chain races the exit.
+- 2026-11-17: the workflow sent "要做吗" from `start` without awaiting it;
+  `poll --once` aborted the run and killed the DM, so the ticket was held and the
+  operator was never asked.
+- The executor counts pending asks and `idle()` waits for them; answers too.
 - Seen 1× (2026-11-17).
 
 **A recovery path goes through the same gate as a new start.**
-- 2026-11-17: `recover()` pushed a pending assignment straight into the free-slot
-  queue. An issue the operator had approved before a restart would have started
-  without asking again, and one still waiting would have skipped the gate. Both
-  now go through `dispatch`.
-- When adding a gate, find every path that dispatches work, and test the restart
-  path as well as the new one.
+- 2026-11-17: `recover()` pushed a pending assignment straight into the queue, so
+  a restart could start an unapproved issue or skip the gate. Both go through
+  `dispatch`.
+- When adding a gate, find every path that dispatches work.
 - Seen 1× (2026-11-17).
 
 **The queue's own choice is a person's act, not a bot message.**
-- 2026-11-17: an issue the queue proposed was ignored with reason `bot`. The
-  trigger marked itself non-human when the issue's author was the account the
-  agent acts as, which is the normal case here: 千寻 posts and commits as
-  `chaoyuepan`, and the issues are written by `chaoyuepan` too.
-- A Source's "not the agent's own message" rule exists to drop what the agent
-  wrote. A queue that the operator configured is the operator choosing, so
-  `issueTrigger` now marks every non-bot issue human; `addressed: 'direct'` says
-  who chose it.
+- 2026-11-17: a proposed issue was ignored with reason `bot`: its author was the
+  account the agent acts as, which is normal here (千寻 posts as `chaoyuepan`).
+- `issueTrigger` now marks every non-bot issue human; the queue is the operator
+  choosing.
 - Seen 1× (2026-11-17).
 
 **A queue follows the work's order, not the API's.**
-- 2026-11-17: the first queue ranked a `[Phase 0]` title first and proposed `#2585`, the newest
-  issue. The operator expected the oldest: the issues are numbered in dependency
-  order (`#2552`–`#2556`, `#2558` and `#2560` all reference `#2548`–`#2551`, and
-  `#2585` references `#2557`), so ascending iid is the dependency order and the
-  Phase 0 cleanup belongs last, not first.
-- The label says what may be worked; the order comes from the issue numbers the
-  plan wrote. When a queue rule disagrees with the numbering, ask the operator
-  which one is the order.
+- 2026-11-17: a `[Phase 0]`-first rule proposed `#2585` (newest). The issues are
+  numbered in dependency order (`#2552`–`#2560` reference `#2548`–`#2551`;
+  `#2585` references `#2557`), so ascending iid is the order.
+- The label says what may be worked; the numbers say in what order.
 - Seen 1× (2026-11-17).
 
 **A long-lived branch is not a per-ticket worktree.**
-- 2026-11-17: dora-service keeps one development branch,
-  `personal/smallnest/eventbus-grpc-getpwafeeds`, which is ~600 commits away
-  from `release/test`. `executor.worktree: false` runs each turn in the checkout
-  on that branch; the test branch is a temporary branch from `release/test` with
-  the issue's commits cherry-picked, and `feature/server` is left alone until a
-  release.
-- One installation, one branch, one issue at a time: a per-ticket branch would
-  split the work and a whole-branch merge would carry unrelated changes.
+- 2026-11-17: dora-service keeps one development branch ~600 commits from
+  `release/test`. `executor.worktree: false` runs in that checkout; the test
+  branch is a temporary branch from `release/test` with the issue cherry-picked.
+- One branch, one issue at a time; only the state files are shared. A per-ticket
+  branch would split the work, and a whole-branch merge would carry unrelated work.
 - Seen 1× (2026-11-17).
 
 ## Verification
 
 **A test that starts a real agent is opt-in, and says what it costs.**
-- `tests/agents.live.test.ts` runs only with `SUPERAGENT_LIVE=1`, because it
-  starts a real agent and spends tokens. The default suite stays offline.
-- A change that needs a real CLI is proven by a live run recorded in the commit
-  body, with the opt-in test as the repeatable part.
+- `tests/agents.live.test.ts` runs only with `SUPERAGENT_LIVE=1`.
+- A change that needs a real CLI is proven by a live run in the commit body.
 - Seen 1× (2026-11-08).
 
 **Text cut for a person is tested with the strings that must survive.**
-- `6990b3e`: the reply became the report's first sentence, cut at 200
-  characters. `deliverable()` splits English at ". " and Chinese at its own
-  punctuation so `zod 4.4.3` and `README.md` stay whole.
-- Test the values a naive split breaks — a decimal, a filename, an id — not
-  only a plain sentence.
+- `6990b3e`: the reply is the report's first sentence, cut at 200 characters;
+  `deliverable()` keeps `zod 4.4.3` and `README.md` whole.
+- Test a decimal, a filename, an id — not only a plain sentence.
 - Seen 1× (2026-11-08).
 
 **A prompt is a file in `prompts/`, and a test proves it reaches the agent.**
-- `816a475`: the two DSH rules that still apply to a one-process ticket
-  (keep the change to what was asked; describe and reconcile the pull request)
-  live as text in `prompts/`, so they are editable without a build and ship
-  with the package.
-- `tests/prompts.test.ts` proves the composed prompt carries them, the
-  operator's instructions and the report contract. Editing a prompt without
-  that test is editing an invisible input.
+- `816a475`: the rules that apply to a one-process ticket live in `prompts/`, so
+  they are editable without a build and ship with the package.
+- `tests/prompts.test.ts` proves the composed prompt carries them.
 - Seen 1× (2026-11-08).
 
-**A red in a full run is compared against the base before it is blamed on the
-change.**
-- 2026-11-17: the full suite left `tests/poll.test.ts` red ("the agent run is
-  recorded beside its worktree" — no log yet) and once timed out
-  `tests/pr-review.test.ts`. Both pass run alone, and a clean worktree at
-  `969e797` fails `poll.test.ts` the same way in a full run, so neither
-  belonged to the change being verified.
-- Run the failing file alone, then run it at the base in a separate worktree
-  (`git worktree add <dir> HEAD`). A red that predates the change is reported
-  with both runs; it is not folded into the commit as a known flake.
+**A red in a full run is compared against the base before it is blamed on the change.**
+- 2026-11-17: the full suite left `poll.test.ts` red; it passed alone, and a
+  clean worktree at `969e797` failed the same way. Run the file alone, then the
+  base in a separate worktree, and report a red that predates the change.
 - Seen 1× (2026-11-17).
 
 **A test waits for the state it checks, not for a duration.**
-- 2026-11-17: `tests/poll.test.ts` slept 400 ms for the agent's turn to
-  prepare a worktree and 300 ms for the log it writes, then read both. In a
-  full parallel run about half the runs lost that race and found no `log.md`;
-  each file passed alone.
-- It now waits on the things it asserts — the agent's start marker before
-  reading the worktree, the log entry before reading the log — through the
-  file's `until` helper. Five full runs after the change were green.
+- 2026-11-17: `poll.test.ts` slept 400/300 ms and lost the race in about half of
+  the full runs. It now waits on the agent's start marker and the log entry.
 - Pick the state the assertion needs, with a deadline longer than the work and
-  shorter than the test's own timeout.
+  shorter than the test's timeout.
 - Seen 1× (2026-11-17).
 
 **A test's own deadline fits inside the test's timeout.**
-- 2026-11-17: `tests/pr-review.test.ts` polled a 10 s deadline inside a test
-  with no timeout argument, so vitest's default 5 s ended it first. The test
-  now asks for 30 s and the poll keeps its 10 s.
+- 2026-11-17: `pr-review.test.ts` polled 10 s inside a test with no timeout, so
+  vitest's 5 s default ended it first. It now asks for 30 s.
 - Seen 1× (2026-11-17).
 
 ## Packaging and releases
 
 **Build at pack time, not at install time.**
-- `c21c2af`: npm 11 refuses an install script a package did not get approved
-  for, and `lib/` ships inside the tarball. The build moved from `prepare`
-  (runs on install) to `prepack` (runs on pack).
-- Test a release by installing the tarball into an empty directory, not by
-  running the checkout's bin.
+- `c21c2af`: npm 11 refuses an install script a package was not approved for,
+  and `lib/` ships in the tarball. The build moved from `prepare` to `prepack`.
+- Test a release by installing the tarball into an empty directory.
 - Seen 1× (2026-11-08).
 
-**The npm name and the bin name are different decisions.**
-- `d705447`: npm's `superagent` was taken, so the package is
-  `superagent-skill` and the command stays `superagent`. README installs with
-  `npm install -g superagent-skill`.
-- A rename touches three things: `package.json` name, the `bin` key and the
-  install line in every doc.
-- Seen 1× (2026-11-08).
-
-**A version bump exists to make the published artifact match the code.**
-- `c89395a` (0.2.0) was not about features; it made the tarball carry the code
-  that had already merged — proactive claiming, a real `maxWorkers` limit and
-  recovery of interrupted tickets.
-- A release body says what the tarball now holds that the last one did not.
-- Seen 1× (2026-11-09).
+The publish checks — the registry's delay, and which credential works — are in
+[AGENTS.md](AGENTS.md), under Publishing; they were seen three times and moved.
 
 ## Open work these lessons name
 
-- A GitHub or Feishu live round after the outbox change: both paths use the same
-  `send()`, and only GitLab has been run against a real account since.
+- A GitHub or Feishu live round after the outbox change: only GitLab has been run
+  against a real account since.
 - `poll --once` now outlives its interval when a turn is long, and the state
-  directory has no lock, so cron runs can overlap. The real fix is a lock on the
-  state directory; until then the interval must be longer than a turn, or the
-  installation runs the long-running `poll`.
-
-**A publish appears in the registry only after npm has finished processing it.**
-- 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and the registry
-  answered 404 for that version for the next ~1.5 minutes; a second publish was
-  started on that reading, though the first had been accepted. 0.4.2 took ~4.5
-  minutes and 0.5.0 ~1.5. `time.modified` moves once processing finishes.
-- Verify against the packument — `curl https://registry.npmjs.org/<name>` and
-  read `versions` and `dist-tags`, or poll `/<name>/<version>` — not
-  `npm view <name>@<version>` seconds after the upload. A second publish of the
-  same version fails, so wait for the first instead of resending it.
-- Seen 3× (2026-11-17). Moved to [AGENTS.md](AGENTS.md), under Publishing.
-
-**A credential in `~/.npmrc` is checked with `npm whoami` before it is trusted.**
-- 2026-11-17: `npm whoami` returned 401 in this checkout while `$NPM_TOKEN`
-  authenticated as `smallnest`; the `_authToken` line in `~/.npmrc` was stale.
-  Publishing with `--//registry.npmjs.org/:_authToken="$NPM_TOKEN"` worked.
-- Ask npm which identity it resolved rather than trusting the file, and never
-  put the token in a log or a commit.
-- Seen 1× (2026-11-17).
+  directory has no lock, so cron runs can overlap. Until there is a lock, the
+  interval must be longer than a turn, or the installation runs the long `poll`.

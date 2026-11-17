@@ -43,6 +43,10 @@ export interface PromptInput {
   mergeInto?: string
   /** True when the ticket works in the installation checkout on its own long-lived branch, not a per-ticket worktree. */
   shared?: boolean
+  /** Short rules the installation learned from earlier tickets, loaded into every prompt. */
+  memory?: string[]
+  /** True when the ticket should record a new rule in the repository's lessons file when it taught one. */
+  reflect?: boolean
 }
 
 /**
@@ -153,11 +157,15 @@ export function composePrompt(input: PromptInput): string {
     input.mergeInto
       ? `- Merge the ${words.request} into \`${input.mergeInto}\` once your checks pass, so the test environment picks it up. Merge nothing into another branch.`
       : `- Do not merge the ${words.request}. A person merges it.`,
+    ...input.reflect ? [
+      '- If this ticket taught a rule — a trap, a measurement, a fix that will repeat — add one line to the repository\'s `LESSONS.md` in this change and name it in your report summary. If it taught nothing, write no lesson.',
+    ] : [],
     '- If the request needs a decision you cannot make, stop and ask one concrete question.',
     ...input.readOnly ? [
       '- Autonomous run mode: you may inspect, search, and run tests, but do NOT push commits or make permanent mutations.',
       '- If code changes or human decisions are required, report state as "blocked" and provide a "question" for human approval.',
     ] : [],
+    ...input.memory?.length ? ['', '## Memory', '', 'Short rules from earlier tickets in this installation. Follow them; the list is capped on purpose.', '', ...input.memory] : [],
     ...standing.filter(Boolean).flatMap(rule => ['', rule]),
     ...instructions.trim() ? ['', '## Team instructions', '', instructions.trim()] : [],
     reportInstructions(),

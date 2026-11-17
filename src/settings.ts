@@ -134,6 +134,10 @@ export const WorkflowSchema = z.object({
   user: z.string().min(1),
   /** The branch a ticket merges its request into, such as `release/test`; empty means a person merges it. */
   mergeInto: z.string().default('release/test'),
+  /** The most rules the memory keeps; the oldest goes when a new one makes the list longer. */
+  memoryLines: z.number().int().min(5).max(200).default(40),
+  /** How often the bot sends the rules back for a person to delete what is wrong. */
+  reviewDays: z.number().int().min(1).max(365).default(7),
   /** Commands run in the ticket's worktree after the turn; their output joins the summary. */
   verifyCommands: z.array(z.string()).default([]),
 })

@@ -166,7 +166,7 @@ import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
 import { closeIssue, closeMergeRequest, gitlabLogin, issueTrigger, listOpenIssues, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, recentMessages, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
-import { WorkflowStore, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
+import { MemoryStore, WorkflowStore, memoryCommand, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
 import { runPrVerification } from './infra/pr-verifier.ts'
@@ -532,6 +532,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   const listen = Boolean(feishu) && !(workflow && (feishu!.chats?.length ?? 0) === 0)
   const workflowStore = workflow ? new WorkflowStore(settings.stateDir) : undefined
   if (workflowStore) await workflowStore.init()
+  const memory = workflow ? new MemoryStore(settings.stateDir) : undefined
   if (!github && !gitlab && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
   const login = github ? await agentLogin(github.cli, signal) : gitlab ? await gitlabLogin(gitlab.cli, gitlab.host, signal) : ''
   const twitterBot = twitter ? await twitterAccount(twitter.cli, signal) : ''
@@ -630,10 +631,31 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         ticket, trigger, repository, agentLogin: login, branchPrefix: settings.branchPrefix,
         source, instructions: settings.prompts, branch, standing, notes, readOnly,
         isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(autoMerge), mergeInto: workflow?.mergeInto,
-        shared: settings.executor.worktree === false,
+        shared: settings.executor.worktree === false, memory: memory ? await memory.rules() : [], reflect: Boolean(workflow),
       })
     },
   })
+  /** Adds a rule the operator wrote, and says how full the list is. */
+  const rememberRule = async (command: { iid: number; text: string }): Promise<void> => {
+    if (!memory || !workflow || !feishu) return
+    const rules = await memory.remember(command.text, workflow.memoryLines)
+    await sendMessage(feishu.cli, { userId: workflow.user },
+      `记住了（${rules.length}/${workflow.memoryLines} 条）：${command.text}`, `memory-${command.iid}-${Date.now()}`, signal)
+      .catch(error => log(`Could not confirm the rule: ${(error as Error).message}`))
+  }
+  /** Sends the rules back every `reviewDays` so a person can delete what is wrong. */
+  const reviewMemory = async (): Promise<void> => {
+    if (!memory || !workflow || !feishu) return
+    if (!await memory.dueForReview(workflow.reviewDays)) return
+    const rules = await memory.rules()
+    if (rules.length) {
+      await sendMessage(feishu.cli, { userId: workflow.user },
+        `**规则回顾（${workflow.reviewDays} 天一次）**\n\n${rules.join('\n')}\n\n读一遍，过时的直接编辑 \`${memory.file()}\` 删掉。`,
+        `memory-review-${new Date().toISOString().slice(0, 10)}`, signal)
+        .catch(error => log(`Could not send the memory review: ${(error as Error).message}`))
+    }
+    await memory.markReviewed()
+  }
   /** The operator's answer in Feishu: start, skip, close or keep the issue the workflow is on. */
   const handleWorkflowCommand = async (command: Command): Promise<void> => {
     if (!workflow || !feishu || !workflowStore || !gitlab) return
@@ -702,6 +724,8 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         if (seen.has(message.messageId)) continue
         seen.add(message.messageId)
         if (message.senderId !== workflow.user) continue
+        const remembered = memoryCommand(message.text)
+        if (remembered) { await rememberRule(remembered); continue }
         const command = workflowCommand(message.text)
         if (command) await handleWorkflowCommand(command)
       }
@@ -757,8 +781,10 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       .then(trigger => {
         if (!trigger) return
         // The operator's answer to a workflow question is a direct message from the configured user, not a new request.
-        const command = workflow && trigger.meta?.direct === true && trigger.actor.id === workflow.user
-          ? workflowCommand(trigger.text) : undefined
+        const mine = workflow && trigger.meta?.direct === true && trigger.actor.id === workflow.user
+        const remembered = mine ? memoryCommand(trigger.text) : undefined
+        if (remembered) { track(rememberRule(remembered)); return }
+        const command = mine ? workflowCommand(trigger.text) : undefined
         if (command) { track(handleWorkflowCommand(command)); return }
         store(trigger)
       })
@@ -895,7 +921,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
           }
         }
       }
-      if (workflow) { await proposeIssue(); await pollWorkflowDm() }
+      if (workflow) { await proposeIssue(); await pollWorkflowDm(); await reviewMemory() }
       if (twitter) {
         try {
           const triggers = await searchTweets(twitter.cli, twitter.query, {

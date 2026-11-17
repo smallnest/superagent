@@ -136,8 +136,11 @@ executor:
 
 The bot proposes the next labeled issue — the oldest open one, since dependencies are lower-numbered — and asks. `做 #2585` starts
 the turn, `不做 #2585` drops it. When the turn ends the bot sends the summary and the output of `verifyCommands`, then asks
-`关闭 #2585` or `保留 #2585`; only `关闭` closes the issue. The next issue is proposed after that answer. Answers are read
-from the live Feishu stream, so run `superagent poll` continuously rather than one round at a time.
+`关闭 #2585` or `保留 #2585`; only `关闭` closes the issue. The next issue is proposed after that answer.
+
+A rule the operator wants kept is `记住 #2585 <one line>`: it appends to `state/memory/rules.md`, which every ticket
+prompt carries and which is capped (`workflow.memoryLines`). The bot sends that list back every `workflow.reviewDays` so
+it can be pruned. Answers are read from the direct chat each round, so `superagent poll` must run continuously.
 
 ## Compare with dsh-superagent
 
