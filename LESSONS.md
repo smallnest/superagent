@@ -186,3 +186,22 @@ change.**
   recovery of interrupted tickets.
 - A release body says what the tarball now holds that the last one did not.
 - Seen 1× (2026-11-09).
+
+**A publish appears in the registry only after npm has finished processing it.**
+- 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and for the next
+  ~1.5 minutes the registry still served 0.4.0 and answered 404 for 0.4.1. A
+  second publish was started on that reading; the first had already been
+  accepted, and `time.modified` moved once processing finished.
+- Verify against the packument — `curl https://registry.npmjs.org/<name>` and
+  read `versions` and `dist-tags` — not `npm view <name>@<version>` seconds
+  after the upload. A second publish of the same version fails, so wait for the
+  first instead of resending it.
+- Seen 1× (2026-11-17).
+
+**A credential in `~/.npmrc` is checked with `npm whoami` before it is trusted.**
+- 2026-11-17: `npm whoami` returned 401 in this checkout while `$NPM_TOKEN`
+  authenticated as `smallnest`; the `_authToken` line in `~/.npmrc` was stale.
+  Publishing with `--//registry.npmjs.org/:_authToken="$NPM_TOKEN"` worked.
+- Ask npm which identity it resolved rather than trusting the file, and never
+  put the token in a log or a commit.
+- Seen 1× (2026-11-17).
