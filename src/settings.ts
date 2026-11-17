@@ -100,6 +100,32 @@ export const PrReviewSchema = z.object({
 
 export type PrReview = z.infer<typeof PrReviewSchema>
 
+/** Merge request review on GitLab: the same work as `PrReviewSchema`, with GitLab's squash-instead-of-method. */
+export const MrReviewSchema = z.object({
+  /** Whether autonomous merge request review is enabled. */
+  enabled: z.boolean().default(true),
+  /** When true, actively polls open merge requests in the project. */
+  pollOpenMrs: z.boolean().default(true),
+  /** Commands to run locally inside the worktree to verify the merge request, e.g. ["npm test"]. */
+  verifyCommands: z.array(z.string()).default([]),
+  /** Timeout in seconds for each verify command. Default 300s. */
+  verifyTimeoutSeconds: z.number().int().min(10).max(3600).default(300),
+  /** Whether to merge the merge request if verification and review both pass. */
+  autoMerge: z.boolean().default(false),
+  /** Whether the merge squashes the commits. GitLab applies its project setting when this is false. */
+  squash: z.boolean().default(true),
+  /** Whether merge requests from authors not explicitly in the allowed list may be reviewed. */
+  allowCommunityMrs: z.boolean().default(true),
+})
+
+export type MrReview = z.infer<typeof MrReviewSchema>
+
+/** A host as `gitlab.host` names it: a DNS name or address, optionally with a port for a self-managed instance. */
+const HOST = /^[A-Za-z0-9.-]+(?::\d+)?$/
+/** A project path, subgroups included: `group/project` or `group/subgroup/project`. */
+const PROJECT = /^[\w.-]+(?:\/[\w.-]+)+$/
+
+
 export const SettingsSchema = z.object({
   /** Where tickets, triggers and logs live, as an absolute path. */
   stateDir: z.string().min(1),
@@ -140,6 +166,21 @@ export const SettingsSchema = z.object({
     /** Twitter handles that may trigger tickets; empty accepts any user matching the query. */
     allowed: z.array(z.string()).default([]),
   }).optional(),
+  gitlab: z.object({
+    enabled: z.boolean().default(true),
+    /** The instance to talk to: `gitlab.com`, or the host of a self-managed GitLab, optionally with a port. */
+    host: z.string().regex(HOST, 'expected a host such as gitlab.com or git.example.com:8443').default('gitlab.com'),
+    /** The project to work on, as `group/project`; subgroups are part of the path. */
+    project: z.string().regex(PROJECT, 'expected group/project'),
+    /** The CLI that acts as the agent's account, such as `glab-agent`. */
+    cli: z.string().default('glab'),
+    /** How often to poll to-do items, in seconds. */
+    pollSeconds: z.number().int().min(15).max(3600).default(60),
+    /** GitLab usernames that may ask for work. Empty accepts nobody. */
+    allowed: z.array(z.string()).default([]),
+    /** Merge request review, checkout, and verification settings. */
+    mrReview: MrReviewSchema.optional(),
+  }).optional(),
   executor: ExecutorSchema.optional().transform(value => ExecutorSchema.parse(value ?? {})),
   policy: PolicySchema.optional().transform(value => PolicySchema.parse(value ?? {})),
   /** Who assesses a candidate and with what: the `claude` CLI, or a runner named here. */
@@ -160,6 +201,12 @@ export const SettingsSchema = z.object({
   timers: TimersSchema.optional().transform(value => TimersSchema.parse(value ?? {})),
   /** Pull-based active watchers for external sources without webhooks. */
   watchers: z.array(WatcherSchema).default([]),
+}).strict().superRefine((settings, context) => {
+  // One installation serves one forge: the worker's git credentials, the CLI shim and the review prompt each name one.
+  if (settings.github?.enabled && settings.gitlab?.enabled) {
+    context.addIssue({ code: 'custom', path: ['gitlab'],
+      message: 'one installation serves one forge: set `github.enabled` or `gitlab.enabled` to false' })
+  }
 })
 
 export type Settings = z.infer<typeof SettingsSchema>

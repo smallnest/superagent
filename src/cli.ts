@@ -14,10 +14,10 @@ import { reasonText } from './core/index.ts'
 import { defaultSettings, readSettings, SETTINGS_FILE, writeSettings } from './settings.ts'
 import { names, setup } from './setup.ts'
 
-const USAGE = `superagent — an agent that turns GitHub and Feishu requests into tickets
+const USAGE = `superagent — an agent that turns GitHub, GitLab and Feishu requests into tickets
 
   superagent init [dir]            create ${SETTINGS_FILE} and the state directory in dir (default: .)
-  superagent setup [dir] [what…]   fill the GitHub and Feishu settings from the configured CLIs
+  superagent setup [dir] [what…]   fill the Source settings from the configured CLIs
   superagent status [dir]          print open tickets and recent activity as Markdown
   superagent doctor [dir]          show which coding agents are installed and which one is selected
   superagent agents                list the coding agents a configuration may name
@@ -26,10 +26,10 @@ const USAGE = `superagent — an agent that turns GitHub and Feishu requests int
 
 superagent setup asks the CLIs that already know the answers, so a person does not copy ids out of a web page:
 
-  --allow <names>   logins or Feishu user names that may ask for work, comma separated
-                    (a name becomes the member's open id; the chat's members are added too)
+  --allow <names>   logins, GitLab usernames or Feishu user names that may ask for work, comma separated
+                    (a Feishu name becomes the member's open id; the chat's members are added too)
   --chat <id|name>  the Feishu chat the bot listens to
-  github, feishu    set up only one of them (the default is both)
+  github, feishu, gitlab   set up only one of them (the default is GitHub and Feishu)
 
 Every command that reads an installation takes the directory that holds ${SETTINGS_FILE}.`
 
@@ -61,7 +61,7 @@ async function init(dir: string): Promise<number> {
     '',
     `State lives in ${settings.stateDir}.`,
     '',
-    'Next: set `github.repository` and `github.allowed`, choose `executor.agent`, then run `superagent doctor`.',
+    'Next: set `github.repository` or `gitlab.project`, fill its allowed list, choose `executor.agent`, then run `superagent doctor`.',
     '',
   ].join('\n'))
   return 0
@@ -70,7 +70,7 @@ async function init(dir: string): Promise<number> {
 /** Fills the Source settings from GitHub and Feishu; the options are read here so the module stays about the CLIs. */
 async function setupSources(dir: string, rest: readonly string[]): Promise<number> {
   const flag = (name: string): string | undefined => { const index = rest.indexOf(name); return index < 0 ? undefined : rest[index + 1] }
-  const targets = rest.filter(item => item === 'github' || item === 'feishu') as Array<'github' | 'feishu'>
+  const targets = rest.filter(item => item === 'github' || item === 'feishu' || item === 'gitlab') as Array<'github' | 'feishu' | 'gitlab'>
   let settings
   try { settings = await readSettings(join(dir, SETTINGS_FILE)) } catch (error) { process.stderr.write(`${(error as Error).message}\n`); return 1 }
   return setup({
@@ -134,6 +134,7 @@ async function doctor(dir: string): Promise<number> {
   const chosen = settings.executor.agent as AgentName
   lines.push('', `Selected: **${chosen}**${found[chosen] ? '' : ' — not installed'}`, '')
   if (settings.github) lines.push(`Repository: \`${settings.github.repository}\`, allowed logins: ${settings.github.allowed.join(', ') || '(none)'}`, '')
+  if (settings.gitlab) lines.push(`GitLab project: \`${settings.gitlab.project}\` on \`${settings.gitlab.host}\`, allowed users: ${settings.gitlab.allowed.join(', ') || '(none)'}`, '')
   const stateFound = await exists(settings.stateDir)
   lines.push(`State directory: \`${settings.stateDir}\`${stateFound ? '' : ' — missing, run `superagent init`'}`, '')
   process.stdout.write(lines.join('\n'))

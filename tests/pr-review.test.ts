@@ -102,7 +102,27 @@ describe('Pull Request Prompt Composition', () => {
     })
 
     expect(prompt).toContain('⚠️ **CRITICAL: Local automated verification has FAILED.**')
-    expect(prompt).toContain('You MUST NOT approve or merge this PR')
+    expect(prompt).toContain('You MUST NOT approve or merge this pull request')
+  })
+
+  it('names a GitLab merge request, not a pull request, in its review prompt', () => {
+    const prompt = composePrompt({
+      ticket: { id: 'ticket-mr-12', title: 'Review !12' } as any,
+      trigger: { id: 'trigger-mr-12', text: 'Add a health endpoint', url: 'https://gitlab.example.com/acme/app/-/merge_requests/12' } as any,
+      repository: 'acme/app',
+      agentLogin: 'gitlab-bot',
+      branchPrefix: 'agent/',
+      instructions: '',
+      source: 'gitlab',
+      isPrReview: true,
+      prNumber: 12,
+      autoMergeAllowed: true,
+    })
+
+    expect(prompt).toContain('Merge Request #12 Review & Verification')
+    expect(prompt).toContain('You are reviewing Merge Request #12 on repository `acme/app`')
+    expect(prompt).toContain('Your GitLab account is `gitlab-bot`')
+    expect(prompt).not.toContain('Pull Request')
   })
 })
 

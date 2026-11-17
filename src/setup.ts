@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { readSettings, stringifyYaml, SETTINGS_FILE, type Settings } from './settings.ts'
 import { run, runJson, CliError } from './infra/commands.ts'
 import { chatMembers } from './sources/feishu.ts'
+import { gitlabLogin as gitlabAccount } from './sources/gitlab.ts'
 
 /** What a setup step changed, and what to tell the person about what it did not need to change. */
 export interface SetupReport {
@@ -108,9 +109,9 @@ export const names = (value: string | undefined): string[] =>
 
 export interface SetupOptions {
   dir: string
-  /** What to set up; empty means both Sources. */
-  targets: readonly ('github' | 'feishu')[]
-  /** GitHub logins or Feishu user names that may ask for work. Empty removes nobody. */
+  /** What to set up; empty means the GitHub and Feishu Sources. */
+  targets: readonly ('github' | 'feishu' | 'gitlab')[]
+  /** GitHub logins, GitLab usernames or Feishu user names that may ask for work. Empty removes nobody. */
   allow: readonly string[]
   /** A Feishu chat id or name to listen to, instead of reading the settings file. */
   chat: string | undefined
@@ -119,7 +120,7 @@ export interface SetupOptions {
   log: (line: string) => void
 }
 
-const MANAGED = ['github', 'feishu'] as const
+const MANAGED = ['github', 'feishu', 'gitlab'] as const
 
 /**
  * The settings file with only the Source sections replaced, so this command keeps the text an operator wrote.
@@ -166,6 +167,11 @@ export async function setupGithub(options: SetupOptions): Promise<SetupReport> {
   let login: string | undefined
   await update(options.dir, async settings => {
     const cli = settings.github?.cli ?? 'gh'
+    if (settings.gitlab?.enabled) {
+      lines.push('GitHub: this installation already serves GitLab; set `gitlab.enabled` to false before adding GitHub')
+      failed = true
+      return false
+    }
     try { login = await githubLogin(cli) } catch (error) { lines.push(`GitHub: ${(error as Error).message}`); failed = true; return false }
     lines.push(`GitHub account: ${login} (${cli})`)
     const origin = options.stateDir ? await originOf(settings.checkout, options.stateDir) : undefined
@@ -187,6 +193,61 @@ export async function setupGithub(options: SetupOptions): Promise<SetupReport> {
         lines.push(`Note: ${login} is not allowed to ask for work; add it with \`--allow ${login}\` if the agent should answer itself.`)
       return true
     } catch (error) { lines.push(`GitHub: ${(error as Error).message}`); failed = true; return false }
+  })
+  return { lines, failed }
+}
+
+/** The host and project of a GitLab remote URL, in either the https or the ssh form. */
+export function gitlabOrigin(origin: string): { host: string; project: string } | undefined {
+  const match = /^(?:https?:\/\/([^/]+)\/|ssh:\/\/git@([^/]+)\/|git@([^/]+):)(.+?)(?:\.git)?\/?$/.exec(origin.trim())
+  if (!match) return undefined
+  const host = (match[1] ?? match[2] ?? match[3] ?? '').replace(/^[^@]+@/, '')
+  const project = match[4]
+  return host && project ? { host, project } : undefined
+}
+
+/** Fills the GitLab Source from `glab` and the checkout's origin, so a self-managed instance is one field. */
+export async function setupGitlab(options: SetupOptions): Promise<SetupReport> {
+  const lines: string[] = []
+  let failed = false
+  await update(options.dir, async settings => {
+    const cli = settings.gitlab?.cli ?? 'glab'
+    if (settings.github?.enabled) {
+      lines.push('GitLab: this installation already serves GitHub; set `github.enabled` to false before adding GitLab')
+      failed = true
+      return false
+    }
+    const origin = options.stateDir ? await originOf(settings.checkout, options.stateDir) : undefined
+    const parsed = origin ? gitlabOrigin(origin) : undefined
+    // A host the operator named wins; the schema's `gitlab.com` default does not, so a self-managed checkout fills its own.
+    const configuredHost = settings.gitlab?.host
+    const host = configuredHost && configuredHost !== 'gitlab.com' ? configuredHost : parsed?.host ?? configuredHost ?? 'gitlab.com'
+    const project = settings.gitlab?.project ?? parsed?.project
+    if (!project) {
+      lines.push('GitLab: no `group/project` in settings and none in the checkout origin; set `gitlab.project`')
+      failed = true
+      return false
+    }
+    let login: string
+    try { login = await gitlabAccount(cli, host) } catch (error) { lines.push(`GitLab: ${(error as Error).message}`); failed = true; return false }
+    lines.push(`GitLab account: ${login} (${cli} on ${host})`)
+    try {
+      const meta = await runJson<{ path_with_namespace?: string; visibility?: string }>(cli,
+        ['api', '--hostname', host, `projects/${encodeURIComponent(project)}`])
+      const gitlab = settings.gitlab = {
+        ...settings.gitlab ?? { enabled: true, host, project, cli, pollSeconds: 60, allowed: [] },
+        enabled: settings.gitlab?.enabled ?? true,
+        host,
+        cli,
+        project: meta.path_with_namespace ?? project,
+        allowed: options.allow.length ? [...options.allow] : settings.gitlab?.allowed ?? [],
+      }
+      lines.push(`Project: ${gitlab.project}${meta.visibility ? ` (${meta.visibility})` : ''}`)
+      lines.push(`Allowed users: ${gitlab.allowed.join(', ') || '(none)'}`)
+      if (gitlab.allowed.every(item => item.toLowerCase() !== login.toLowerCase()))
+        lines.push(`Note: ${login} is not allowed to ask for work; add it with \`--allow ${login}\` if the agent should answer itself.`)
+      return true
+    } catch (error) { lines.push(`GitLab: ${(error as Error).message}`); failed = true; return false }
   })
   return { lines, failed }
 }
@@ -261,11 +322,14 @@ export async function setupFeishu(options: SetupOptions): Promise<SetupReport> {
 
 /** Runs the steps in order and prints what each found; a failed GitHub step still lets Feishu run. */
 export async function setup(options: SetupOptions): Promise<number> {
-  const targets: readonly ('github' | 'feishu')[] = options.targets.length ? options.targets : ['github', 'feishu']
+  // A file that already names its forge keeps it: `setup` fills that section instead of switching the installation over.
+  const current = await readSettings(join(options.dir, SETTINGS_FILE)).catch(() => undefined)
+  const forge = current?.gitlab?.enabled ? 'gitlab' as const : 'github' as const
+  const targets: readonly ('github' | 'feishu' | 'gitlab')[] = options.targets.length ? options.targets : [forge, 'feishu']
   let failed = false
   try {
     for (const target of targets) {
-      const report = target === 'github' ? await setupGithub(options) : await setupFeishu(options)
+      const report = target === 'github' ? await setupGithub(options) : target === 'feishu' ? await setupFeishu(options) : await setupGitlab(options)
       for (const line of report.lines) options.log(line)
       failed ||= report.failed
     }

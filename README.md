@@ -1,6 +1,6 @@
 # superagent
 
-An agent that turns requests from GitHub, Feishu, and Twitter/X into tickets, and runs each ticket on the coding agent you choose.
+An agent that turns requests from GitHub, GitLab, Feishu, and Twitter/X into tickets, and runs each ticket on the coding agent you choose.
 
 - **No web panel.** State is JSON files under `stateDir`, so `ls` and `cat` answer what a dashboard would.
 - **No vendor lock-in.** The executor is a configuration value: `claude`, `codex` or `opencode`, behind one interface.
@@ -29,8 +29,9 @@ superagent status
 `superagent setup` asks the CLIs that already know the answers, so no id is copied from a web page:
 
 ```sh
-superagent setup .                     # both Sources, from the CLIs in settings.yaml
+superagent setup .                     # the forge in settings.yaml and Feishu, from the CLIs
 superagent setup . github              # only the GitHub section
+superagent setup . gitlab              # only the GitLab section
 superagent setup . feishu --chat Team  # the chat by name instead of id
 superagent setup . --allow alice,bob   # who may ask; a Feishu user name becomes an open id
 ```
@@ -93,6 +94,31 @@ Arbitrary polling is not yet wired, so a person runs `poll` under cron or a syst
 */1 * * * * cd /path/to/install && superagent poll . --once >> state/poll.log 2>&1
 ```
 
+## GitLab, including a self-managed instance
+
+A GitLab installation reads the agent account's pending *to-do items* — a mention, a direct address, an assignment or a
+review request — and, when review is on, the project's open merge requests. The report goes back as a note on the issue
+or merge request, and a review can squash-merge the merge request once verification and the review both pass.
+
+```yaml
+gitlab:
+  host: gitlab.example.com     # gitlab.com by default; a port is allowed for a self-managed instance
+  project: group/sub/project   # the project path, subgroups included
+  cli: glab-agent              # the CLI that acts as the agent's account; `glab auth login --hostname <host>`
+  pollSeconds: 60
+  allowed: [alice, bob]        # GitLab usernames that may ask for work
+  mrReview:
+    enabled: true
+    pollOpenMrs: true
+    verifyCommands: ["npm test"]
+    autoMerge: true
+    squash: true               # GitLab applies its project setting when false
+```
+
+One installation serves one forge: `github.enabled` and `gitlab.enabled` cannot both be true, because the worker's git
+credentials and CLI shim bind to one account. A merge request triggers the same review prompt as a pull request, with
+GitLab's words and its `refs/merge-requests/<iid>/head` checkout.
+
 ## Compare with dsh-superagent
 
 [`docs/dsh-superagent-comparison.md`](docs/dsh-superagent-comparison.md)（[中文版](docs/dsh-superagent-comparison.zh.md)）
@@ -107,9 +133,10 @@ for how superagent incorporates the five core primitives from Anthropic's [*"Bui
 ## Status
 
 Done and tested: the domain, file-backed state, the settings file, three agent runners (verified against the real CLIs),
-the GitHub notification poller, the Feishu Source, worktree creation per ticket, the round loop, and delivery of the
-agent's report back to the conversation. The Feishu path is proven with a stand-in `lark-cli` and once end to end
-against a real Feishu bot.
+the GitHub notification poller, the GitLab Source (to-dos, merge request review and merge), the Feishu Source, worktree
+creation per ticket, the round loop, and delivery of the agent's report back to the conversation. The Feishu path is
+proven with a stand-in `lark-cli` and once end to end against a real Feishu bot; the GitLab path is proven with a
+stand-in `glab` and against the API's documented shapes, not yet against a live GitLab account.
 
 ## Install once
 
@@ -129,8 +156,8 @@ ln -sf "$PWD/bin/superagent.js" ~/.local/bin/superagent   # a directory on PATH
 Start the loop from that directory: `superagent poll` keeps running, and `superagent poll --once` runs one round, which
 is what a cron entry calls each minute.
 
-`checkout` names the repository the tickets change, and `executor.agent` names the coding agent. Both `github` and
-`feishu` are optional, but at least one must be on.
+`checkout` names the repository the tickets change, and `executor.agent` names the coding agent. The Sources are
+optional, but at least one must be on; `github` and `gitlab` cannot both be, because one installation serves one forge.
 
 ## Tests
 

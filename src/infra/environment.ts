@@ -12,7 +12,7 @@ import { delimiter, join } from 'node:path'
 
 const MARKER = '# Written by superagent on every start; edits are lost.'
 /** Commands the shims provide, which a blocked list must never shadow. */
-export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
+export const WORKER_COMMANDS: readonly string[] = ['gh', 'glab', 'git', 'lark-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
@@ -23,11 +23,15 @@ export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} au
 export interface EnvironmentAccounts {
   stateDir: string
   /** The CLI that acts as the agent's GitHub account, such as `gh-agent`; the git credential helper too. */
-  githubCli: string
+  githubCli?: string | undefined
+  /** The CLI that acts as the agent's GitLab account, such as `glab-agent`. */
+  gitlabCli?: string | undefined
+  /** The GitLab instance the credential helper names, such as `git.example.com`. */
+  gitlabHost?: string | undefined
   /** The CLI that acts as the Feishu bot, or `undefined` when this installation has none. */
   feishuCli?: string | undefined
-  /** The agent's GitHub login, named in the message a blocked command prints. */
-  agentLogin: string
+  /** The agent's login on the forge, named in the message a blocked command prints. */
+  agentLogin?: string | undefined
 }
 
 async function written(file: string): Promise<boolean> {
@@ -69,10 +73,11 @@ export async function writeEnvironment(accounts: EnvironmentAccounts, blockedCom
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(accounts.githubCli))
+  await shim('gh', accounts.githubCli ? run(accounts.githubCli) : fail('gh is unavailable: this installation has no GitHub Source.'))
+  await shim('glab', accounts.gitlabCli ? run(accounts.gitlabCli) : fail('glab is unavailable: this installation has no GitLab Source.'))
   await shim('lark-cli', accounts.feishuCli ? run(accounts.feishuCli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${accounts.agentLogin}.`))
+    await shim(name, fail(`${name} is blocked in this installation${accounts.agentLogin ? `; work as ${accounts.agentLogin}` : ''}.`))
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
 
@@ -81,8 +86,15 @@ export async function writeEnvironment(accounts: EnvironmentAccounts, blockedCom
     // Refuse to commit without an explicit identity instead of guessing one from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
     '[credential]', '\thelper =',
-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(accounts.githubCli))}`,
-    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com:',
+    // The forge the worker pushes to, and the CLI that holds its credentials; the other forge's helper is not written.
+    ...accounts.gitlabCli && accounts.gitlabHost ? [
+      `[credential "https://${accounts.gitlabHost}"]`, `\thelper = ${gitQuote(credentialHelper(accounts.gitlabCli))}`,
+      `[url "https://${accounts.gitlabHost}/"]`, `\tinsteadOf = git@${accounts.gitlabHost}:`, `\tinsteadOf = ssh://git@${accounts.gitlabHost}:`,
+    ] : [],
+    ...accounts.githubCli ? [
+      '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(accounts.githubCli))}`,
+      '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com:',
+    ] : [],
     // The operator's global gitconfig, which usually holds these, is ignored for a run.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')

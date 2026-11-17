@@ -71,6 +71,37 @@ guessed from the docs.**
 - A guess here passes every unit test and fails only with a real account.
 - Seen 1× (2026-11-08).
 
+**A second forge is a second event shape, not a rename of the first.**
+- 2026-11-17: the GitLab Source (`src/sources/gitlab.ts`) reads `/todos`, which
+  carries the note's text, its author and the issue or merge request's iid in
+  one response. GitHub's notification carries only a link and needs a second
+  call for the comment (`src/sources/github.ts`). Copying the GitHub shape
+  would have fetched every note twice.
+- The same holds for the review checkout: a merge request's head is
+  `refs/merge-requests/<iid>/head`, a pull request's is `pull/<n>/head`.
+- Read the new forge's own event and name its pieces in `meta`; keep the
+  domain's `Trigger` unchanged.
+- Seen 1× (2026-11-17).
+
+**One rule with two homes is enforced by the schema, not the docs.**
+- 2026-11-17: one installation serves one forge, because the worker's git
+  credential helper and CLI shim bind to one account. `SettingsSchema` refuses
+  `github.enabled` and `gitlab.enabled` together, so `superagent init`, `setup`
+  and a hand-edited file all say the same thing.
+- The check belongs where the value is parsed; a sentence in README is found
+  only by whoever reads it before the mistake.
+- Seen 1× (2026-11-17).
+
+**A schema default cannot be told from a value the operator wrote.**
+- 2026-11-17: `gitlab.host` defaults to `gitlab.com`, so `superagent setup
+  gitlab` on a self-managed checkout kept `gitlab.com` and talked to the wrong
+  instance. It now treats the default as unset and takes the checkout's origin
+  when the host is still `gitlab.com`.
+- When a setup step derives a value that has a default, ask whether the default
+  means "unset" and prefer the stronger signal — here the remote — until a
+  person writes something else.
+- Seen 1× (2026-11-17).
+
 ## Order of what runs
 
 **Anything the work must read is in place before the call that starts it.**
@@ -122,6 +153,18 @@ guessed from the docs.**
 - Disk state is the truth. An in-memory flag cannot survive the crash that
   makes recovery necessary.
 - Seen 1× (2026-11-09).
+
+**A reply is idempotent only within one process.**
+- 2026-11-17: three separate `runLoop({ once: true })` calls in the GitLab test
+  posted the same ready report three times as notes. `Replies.answer` checks
+  `outbox.status(id)` for its "went out already" test, and each run builds a
+  fresh in-memory outbox in `src/runner.ts`, so the id is forgotten between
+  runs. A GitHub installation driven by `poll --once` from cron has the same
+  gap.
+- The id is stable (`key('reply', triggerId, text)`), so the fix is to remember
+  the ids that went out — in the state directory — or to deliver a report in the
+  run that recorded it.
+- Seen 1× (2026-11-17).
 
 ## Verification
 
@@ -204,6 +247,15 @@ change.**
   recovery of interrupted tickets.
 - A release body says what the tarball now holds that the last one did not.
 - Seen 1× (2026-11-09).
+
+## Open work these lessons name
+
+- Deliver a ready report once across separate `poll --once` runs: the outbox's
+  sent ids live in memory only (see "A reply is idempotent only within one
+  process").
+- Run one GitLab round against a real instance — `superagent setup gitlab`, then
+  `superagent poll --once` on a test project — and record what it proved. The
+  GitLab path has a stand-in `glab` only; GitHub and Feishu each had a live run.
 
 **A publish appears in the registry only after npm has finished processing it.**
 - 2026-11-17: `npm publish` printed `+ superagent-skill@0.4.1`, and the registry

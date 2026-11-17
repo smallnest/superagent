@@ -25,6 +25,16 @@ export function sourceScope(settings: Settings): SourceScope {
       // The bot is in the chat and receives every message there; `chats` names what it reads.
       return { listened: true, observed: true }
     }
+    if (input.source === 'gitlab') {
+      const gitlab = settings.gitlab
+      if (!gitlab?.enabled) return { listened: false, reason: 'sourceOff' }
+      const project = (input.meta.repository as string | undefined) ?? gitlab.project
+      if (!project) return { listened: false, reason: 'unsupported' }
+      if (project.toLowerCase() !== gitlab.project.toLowerCase()) return { listened: false, reason: 'otherRepository' }
+      // A to-do is addressed to the agent; an open merge request is only watched when review polling is on.
+      const isMr = Boolean(input.meta.isPr) && Boolean(gitlab.mrReview?.enabled)
+      return { listened: true, observed: isMr }
+    }
     if (input.source !== 'github') return { listened: false, reason: 'unsupported' }
     if (!settings.github?.enabled) return { listened: false, reason: 'sourceOff' }
     const repository = (input.meta.repository as string | undefined) ?? settings.github.repository
@@ -44,6 +54,8 @@ export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceS
     ? settings.feishu?.allowed
     : source === 'twitter'
     ? settings.twitter?.allowed
+    : source === 'gitlab'
+    ? settings.gitlab?.allowed
     : settings.github?.allowed)?.map(id => id.toLowerCase()) ?? [])
   return {
     version: `${settings.policy.mode}:${settings.policy.rules.filter(rule => rule.enabled).map(rule => rule.id).join(',')}`,
@@ -54,8 +66,13 @@ export function buildPolicy(settings: Settings, scope: ReturnType<typeof sourceS
         const basis = { via: 'admission' as const, cell: 'listedUnaddressed' as const }
         return { admissible: true, strength: 'inferred', basis }
       }
-      const isPrReview = trigger.source === 'github' && Boolean(trigger.meta?.isPr) && Boolean(settings.github?.prReview?.enabled)
-      if (isPrReview && settings.github?.prReview?.allowCommunityPrs !== false) {
+      const reviewEnabled = trigger.source === 'gitlab' ? settings.gitlab?.mrReview?.enabled
+        : trigger.source === 'github' ? settings.github?.prReview?.enabled : false
+      const isPrReview = Boolean(trigger.meta?.isPr) && Boolean(reviewEnabled)
+      const community = trigger.source === 'gitlab'
+        ? settings.gitlab?.mrReview?.allowCommunityMrs !== false
+        : settings.github?.prReview?.allowCommunityPrs !== false
+      if (isPrReview && community) {
         const addressed = !!trigger.addressed
         const basis = addressed ? { via: 'listed' as const, addressed: trigger.addressed } : { via: 'admission' as const, cell: 'listedUnaddressed' as const }
         return { admissible: true, strength: addressed ? 'explicit' : 'inferred', basis }

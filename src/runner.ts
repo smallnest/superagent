@@ -84,7 +84,7 @@ function record(engine: Engine, repo: FileRepositories, finished: Finished[], lo
 /** Posts the messages the Engine queued, one comment per message. */
 async function send(
   channel: Outbox & { drain: () => OutboundMessage[] },
-  clis: { github?: string; feishu?: string; twitter?: string },
+  clis: { github?: string; gitlab?: { cli: string; host: string }; feishu?: string; twitter?: string },
   log: (line: string) => void,
   attentionConfig?: Settings['attention'],
 ): Promise<void> {
@@ -116,6 +116,19 @@ async function send(
       } catch (error) { log(`Could not answer in ${address.chatId}: ${(error as Error).message}`) }
       continue
     }
+    if (message.channel.source === 'gitlab') {
+      const address = message.channel.address as { host?: string; project?: string; number?: string; kind?: string }
+      if (!clis.gitlab) { log(`Cannot post on ${address.project}: the GitLab Source is off`); continue }
+      if (!address.project || !address.number) continue
+      const kind = address.kind === 'merge_request' ? 'merge_request' as const : 'issue' as const
+      const url = `${address.project}${kind === 'merge_request' ? '!' : '#'}${address.number}`
+      try {
+        await replyNote({ cli: clis.gitlab.cli, host: address.host ?? clis.gitlab.host, project: address.project,
+          iid: Number(address.number), kind, body: message.text })
+        log(`Posted a note on ${url}`)
+      } catch (error) { log(`Could not post on ${url}: ${(error as Error).message}`) }
+      continue
+    }
     const address = message.channel.address as { repository?: string; number?: string }
     if (!address.number || !address.repository) continue
     if (!clis.github) { log(`Cannot post on ${address.repository}#${address.number}: the GitHub Source is off`); continue }
@@ -143,6 +156,7 @@ import { WatcherEngine } from './infra/watchers.ts'
 import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
+import { closeMergeRequest, gitlabLogin, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, reply, type StreamHandle } from './sources/feishu.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
 import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
@@ -185,8 +199,6 @@ class AgentExecutor implements Executor {
     repository: string
     agent: string
     accounts: EnvironmentAccounts
-    /** The Feishu CLI that acts as the bot, when the Feishu Source is on; its shim goes into the agent's environment. */
-    feishuCli?: string
     engine: Engine
     /** How many tickets may run at once; the others wait in `pending` and start as a turn ends. */
     maxWorkers: number
@@ -256,33 +268,39 @@ class AgentExecutor implements Executor {
   }
 
   private async execute(ticket: Ticket, assignment: Assignment, controller: AbortController): Promise<void> {
-    const { settings, runner, stateDir, accounts, feishuCli, site, repo, log } = this.options
+    const { settings, runner, stateDir, accounts, site, repo, log } = this.options
     const directory = ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
     const trigger = repo?.triggers.get(ticket.origin.triggerId)
     const isPrReview = Boolean(trigger?.meta?.isPr) || ticket.mandate.scope === 'pr_review'
     const prNumber = typeof trigger?.meta?.number === 'number' ? trigger.meta.number : undefined
+    const source = trigger?.source === 'gitlab' ? 'gitlab' as const : 'github' as const
+    // The review settings of the forge this ticket came from; a GitLab merge request uses `mrReview`, a GitHub PR `prReview`.
+    const review = source === 'gitlab' ? settings.gitlab?.mrReview : settings.github?.prReview
 
     try {
-      // Each ticket gets its own branch off the checkout's HEAD, or checks out the PR head.
+      // Each ticket gets its own branch off the checkout's HEAD, or checks out the review's head.
       const branch = ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
       await prepareWorktree({
         checkout: settings.checkout,
         directory,
         branch,
         prNumber: isPrReview ? prNumber : undefined,
-        repository: settings.github?.repository,
+        repository: source === 'gitlab' ? settings.gitlab?.project : settings.github?.repository,
+        ...source === 'gitlab' && settings.gitlab && prNumber !== undefined
+          ? { ref: `refs/merge-requests/${prNumber}/head`, remote: `https://${settings.gitlab.host}/${settings.gitlab.project}.git` }
+          : {},
         signal: controller.signal,
       })
 
       if (settings.executor.prepare) await run('/bin/sh', ['-c', settings.executor.prepare], { env: this.variables(ticket, directory, branch), timeoutMs: 120_000 })
 
-      // Execute automated local verification commands inside the checked-out PR worktree
+      // Execute automated local verification commands inside the checked-out review worktree
       let prVerification: { passed: boolean; markdown: string } | undefined
-      if (isPrReview && settings.github?.prReview?.verifyCommands?.length) {
+      if (isPrReview && review?.verifyCommands?.length) {
         prVerification = await runPrVerification({
           cwd: directory,
-          commands: settings.github.prReview.verifyCommands,
-          timeoutSeconds: settings.github.prReview.verifyTimeoutSeconds,
+          commands: review.verifyCommands,
+          timeoutSeconds: review.verifyTimeoutSeconds,
           signal: controller.signal,
         })
       }
@@ -292,7 +310,7 @@ class AgentExecutor implements Executor {
       const result = await runner.run({
         prompt,
         cwd: directory,
-        env: runEnvironment(feishuCli ? { ...accounts, feishuCli } : accounts, this.variables(ticket, directory, branch)),
+        env: runEnvironment(accounts, this.variables(ticket, directory, branch)),
         signal: controller.signal,
         timeoutMs: settings.executor.timeoutMinutes * 60_000,
         model: settings.executor.model,
@@ -300,29 +318,48 @@ class AgentExecutor implements Executor {
       })
       const report = result.report ?? inferReport(result.finalText, result.ok)
 
-      // Handle Pull Request Actions (Merge, Close, Comment)
-      if (isPrReview && prNumber && settings.github) {
+      // Handle review actions: merge or close the request the ticket was asked to review.
+      if (isPrReview && prNumber && review) {
         const textToAnalyze = `${result.finalText}\n${report.summary}`
         const decisionMatch = /DECISION:\s*(MERGE|APPROVE|REQUEST_CHANGES|CLOSE)/i.exec(textToAnalyze)
         const decision = decisionMatch ? decisionMatch[1]!.toUpperCase() : (report.state === 'ready' ? 'APPROVE' : 'REQUEST_CHANGES')
+        const request = source === 'gitlab' ? `MR !${prNumber}` : `PR #${prNumber}`
+        const project = source === 'gitlab' ? settings.gitlab?.project : settings.github?.repository
+        const verdict = (state: string): string => `🤖 **SuperAgent Review Verdict: ${state}**\n\n${deliverable(report.summary)}`
 
-        if (decision === 'MERGE' && settings.github.prReview?.autoMerge && (!prVerification || prVerification.passed)) {
-          const method = settings.github.prReview.mergeMethod ?? 'squash'
+        if (decision === 'MERGE' && review.autoMerge && (!prVerification || prVerification.passed)) {
           try {
-            await run(settings.github.cli, ['pr', 'merge', String(prNumber), `--${method}`, '--auto', '--repo', settings.github.repository])
-            await run(settings.github.cli, ['pr', 'comment', String(prNumber), '--repo', settings.github.repository, '-b',
-              `🤖 **SuperAgent Review Verdict: MERGED**\n\n${deliverable(report.summary)}\n\nAutomated local verification passed and code review approved.`]).catch(() => {})
-            log?.(`Merged PR #${prNumber} on ${settings.github.repository}`)
+            if (source === 'gitlab' && settings.gitlab) {
+              const gitlab = settings.gitlab
+              await mergeMergeRequest({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: prNumber,
+                squash: gitlab.mrReview?.squash ?? true, autoMerge: true })
+              await replyNote({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: prNumber, kind: 'merge_request',
+                body: `${verdict('MERGED')}\n\nAutomated local verification passed and code review approved.` }).catch(() => {})
+            } else if (settings.github) {
+              const github = settings.github
+              const method = github.prReview?.mergeMethod ?? 'squash'
+              await run(github.cli, ['pr', 'merge', String(prNumber), `--${method}`, '--auto', '--repo', github.repository])
+              await run(github.cli, ['pr', 'comment', String(prNumber), '--repo', github.repository, '-b',
+                `${verdict('MERGED')}\n\nAutomated local verification passed and code review approved.`]).catch(() => {})
+            }
+            log?.(`Merged ${request} on ${project}`)
           } catch (mergeErr: any) {
-            log?.(`Could not merge PR #${prNumber}: ${mergeErr.message}`)
+            log?.(`Could not merge ${request}: ${mergeErr.message}`)
           }
         } else if (decision === 'CLOSE') {
           try {
-            await run(settings.github.cli, ['pr', 'close', String(prNumber), '--repo', settings.github.repository, '-c',
-              `🤖 **SuperAgent Review Verdict: CLOSED**\n\n${deliverable(report.summary)}`])
-            log?.(`Closed PR #${prNumber} on ${settings.github.repository}`)
+            if (source === 'gitlab' && settings.gitlab) {
+              const gitlab = settings.gitlab
+              await closeMergeRequest({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: prNumber })
+              await replyNote({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: prNumber, kind: 'merge_request',
+                body: verdict('CLOSED') }).catch(() => {})
+            } else if (settings.github) {
+              const github = settings.github
+              await run(github.cli, ['pr', 'close', String(prNumber), '--repo', github.repository, '-c', verdict('CLOSED')])
+            }
+            log?.(`Closed ${request} on ${project}`)
           } catch (closeErr: any) {
-            log?.(`Could not close PR #${prNumber}: ${closeErr.message}`)
+            log?.(`Could not close ${request}: ${closeErr.message}`)
           }
         }
       }
@@ -405,13 +442,23 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   if (!options.once) caller.addEventListener('abort', () => stop.abort(), { once: true })
   const signal = stop.signal
   const github = settings.github?.enabled ? settings.github : undefined
+  const gitlab = settings.gitlab?.enabled ? settings.gitlab : undefined
   const feishu = settings.feishu?.enabled ? settings.feishu : undefined
   const twitter = settings.twitter?.enabled ? settings.twitter : undefined
-  if (!github && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
-  const login = github ? await agentLogin(github.cli, signal) : ''
+  if (!github && !gitlab && !feishu && !twitter) throw new Error('No Source is on in settings.yaml; nothing to poll.')
+  const login = github ? await agentLogin(github.cli, signal) : gitlab ? await gitlabLogin(gitlab.cli, gitlab.host, signal) : ''
   const twitterBot = twitter ? await twitterAccount(twitter.cli, signal) : ''
-  // Without a GitHub Source the shims point at nothing usable; every GitHub action then fails inside the run, which is right.
-  const accounts = { stateDir: settings.stateDir, githubCli: github?.cli ?? 'gh', agentLogin: login } as EnvironmentAccounts
+  // The shim of a Source this installation does not have points at nothing usable; its CLI then fails inside the run,
+  // which is right. A worker never falls back to the operator's own credentials.
+  const accounts: EnvironmentAccounts = {
+    stateDir: settings.stateDir,
+    ...github ? { githubCli: github.cli } : {},
+    ...gitlab ? { gitlabCli: gitlab.cli, gitlabHost: gitlab.host } : {},
+    ...feishu ? { feishuCli: feishu.cli } : {},
+    agentLogin: login,
+  }
+  /** The project the tickets change, in the forge's own naming. */
+  const repository = github?.repository ?? gitlab?.project ?? settings.checkout
   await writeEnvironment(accounts, settings.executor.blockedCommands)
   const standing = await standingRules()
 
@@ -446,22 +493,23 @@ export async function runLoop(options: LoopOptions): Promise<void> {
   }
   const executor = new AgentExecutor({
     engine, settings, maxWorkers: settings.executor.maxWorkers, runner: runnerFor(settings.executor.agent as AgentName, settings.executor.binary), stateDir: settings.stateDir,
-    repository: github?.repository ?? settings.checkout, agent: login, accounts, ...feishu ? { feishuCli: feishu.cli } : {},
+    repository, agent: login, accounts,
     site,
     repo,
     log,
     prompt: async (ticket, directory, branch, prVerification) => {
       const trigger = repo.triggers.get(ticket.origin.triggerId)
-      const source = trigger?.source === 'feishu' ? 'feishu' as const : 'github' as const
+      const source = trigger?.source === 'feishu' ? 'feishu' as const : trigger?.source === 'gitlab' ? 'gitlab' as const : 'github' as const
       const isPrReview = Boolean(trigger?.meta?.isPr) || ticket.mandate.scope === 'pr_review'
       const prNumber = typeof trigger?.meta?.number === 'number' ? trigger.meta.number : undefined
       // A text input is a note the Engine carries, such as a recovery note after a restart; a fresh turn has not read it.
       const notes = ticket.inputs.flatMap(input => input.kind === 'text' ? [input.text] : [])
       const readOnly = ticket.mandate.strength === 'inferred' && !isPrReview
+      const autoMerge = source === 'gitlab' ? gitlab?.mrReview?.autoMerge : github?.prReview?.autoMerge
       return composePrompt({
-        ticket, trigger, repository: github?.repository ?? settings.checkout, agentLogin: login, branchPrefix: settings.branchPrefix,
+        ticket, trigger, repository, agentLogin: login, branchPrefix: settings.branchPrefix,
         source, instructions: settings.prompts, branch, standing, notes, readOnly,
-        isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(github?.prReview?.autoMerge),
+        isPrReview, prNumber, prVerification, autoMergeAllowed: Boolean(autoMerge),
       })
     },
   })
@@ -608,6 +656,36 @@ export async function runLoop(options: LoopOptions): Promise<void> {
         since = round
         repo.setMeta(pollKey, since)
       }
+      if (gitlab) {
+        try {
+          const triggers = await pollTodos({
+            cli: gitlab.cli, host: gitlab.host, project: gitlab.project, agent: login, signal,
+            seen: id => repo.getMeta<boolean>(seenKey(id)) === true,
+            mark: id => repo.setMeta(seenKey(id), true),
+          })
+          for (const trigger of triggers) {
+            const result = engine.receive(trigger)
+            if (result !== 'duplicate') log(`Received ${trigger.id} from ${trigger.actor.id} on ${trigger.threads[0]!.id}`)
+          }
+        } catch (error) {
+          if (!signal.aborted) log(`GitLab poll failed: ${(error as Error).message}`)
+        }
+        if (gitlab.mrReview?.enabled && gitlab.mrReview.pollOpenMrs !== false) {
+          try {
+            const triggers = await pollOpenMergeRequests({
+              cli: gitlab.cli, host: gitlab.host, project: gitlab.project, agent: login, signal,
+              seen: id => repo.getMeta<boolean>(`gitlab:seen:${id}`) === true,
+              mark: id => repo.setMeta(`gitlab:seen:${id}`, true),
+            })
+            for (const trigger of triggers) {
+              const result = engine.receive(trigger)
+              if (result !== 'duplicate') log(`Received MR review trigger for !${trigger.meta?.number} from ${trigger.actor.id}`)
+            }
+          } catch (error) {
+            if (!signal.aborted) log(`Merge request poll failed: ${(error as Error).message}`)
+          }
+        }
+      }
       if (twitter) {
         try {
           const triggers = await searchTweets(twitter.cli, twitter.query, {
@@ -694,6 +772,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       await repo.flush()
       await send(channel, {
         ...github ? { github: github.cli } : {},
+        ...gitlab ? { gitlab: { cli: gitlab.cli, host: gitlab.host } } : {},
         ...feishu ? { feishu: feishu.cli } : {},
         ...twitter ? { twitter: twitter.cli } : {},
       }, log, settings.attention)
@@ -705,7 +784,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     if (options.once) break
     // A turn that ends during the wait is recorded by the next round, which starts at once instead of at the interval;
     // a GitHub Source with a longer interval waits in the same way, and the Source's own timer adds nothing to it.
-    const seconds = Math.min(github?.pollSeconds ?? Infinity, feishu ? 15 : Infinity, twitter?.pollSeconds ?? Infinity)
+    const seconds = Math.min(github?.pollSeconds ?? Infinity, gitlab?.pollSeconds ?? Infinity, feishu ? 15 : Infinity, twitter?.pollSeconds ?? Infinity)
     // Only a loop that runs for long waits between rounds; one round on demand ends here, so its timeout has nothing to wake.
     let left = options.once ? 0 : seconds * 1000
     while (left > 0 && !signal.aborted) {

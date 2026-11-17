@@ -18,8 +18,8 @@ export interface PromptInput {
   branchPrefix: string
   /** The operator's own instructions, appended before the report contract. */
   instructions: string
-  /** The Source the request came from; a Feishu chat has no GitHub account to open a pull request from. */
-  source?: 'github' | 'feishu'
+  /** The Source the request came from; a Feishu chat has no forge account to open a request from. */
+  source?: 'github' | 'feishu' | 'gitlab'
   /** The branch the worktree was created on, which the agent pushes instead of naming one itself. */
   branch?: string
   /** The standing rules, from `standingRules`. */
@@ -62,21 +62,27 @@ export async function prReviewRules(): Promise<string> {
   }
 }
 
-/** Composes the prompt for reviewing and verifying a pull request. */
+/** The forge's own words, so a GitLab ticket is not told to open a pull request. */
+const forgeWords = (source?: PromptInput['source']) => source === 'gitlab'
+  ? { name: 'GitLab', request: 'merge request', Request: 'Merge Request', short: 'MR' }
+  : { name: 'GitHub', request: 'pull request', Request: 'Pull Request', short: 'PR' }
+
+/** Composes the prompt for reviewing and verifying a pull request or a merge request. */
 export function composePrReviewPrompt(input: PromptInput): string {
   const { ticket, trigger, repository, agentLogin, instructions, standing = [], notes = [], prNumber, prVerification, autoMergeAllowed } = input
+  const words = forgeWords(input.source)
   const asked = trigger
-    ? `Pull Request #${prNumber} details:\n\n${quote(trigger.text)}`
-    : `Pull Request #${prNumber} review:\n\n${quote(ticket.title)}`
+    ? `${words.Request} #${prNumber} details:\n\n${quote(trigger.text)}`
+    : `${words.Request} #${prNumber} review:\n\n${quote(ticket.title)}`
 
   return [
-    `# Ticket ${ticket.id} — Pull Request #${prNumber} Review & Verification`,
+    `# Ticket ${ticket.id} — ${words.Request} #${prNumber} Review & Verification`,
     '',
-    `You are reviewing Pull Request #${prNumber} on repository \`${repository}\`.`,
-    `The PR's code has been checked out directly into this working directory.`,
-    `Your GitHub account is \`${agentLogin}\`.`,
+    `You are reviewing ${words.Request} #${prNumber} on repository \`${repository}\`.`,
+    `The ${words.short}'s code has been checked out directly into this working directory.`,
+    `Your ${words.name} account is \`${agentLogin}\`.`,
     '',
-    '## The Pull Request',
+    `## The ${words.Request}`,
     '',
     asked,
     ...notes.filter(Boolean).flatMap(note => ['', '## Notes since the start', '', quote(note)]),
@@ -88,16 +94,16 @@ export function composePrReviewPrompt(input: PromptInput): string {
     '## Review Instructions & Standards',
     '',
     '- **Inspect Every Line**: Scrutinize the git diff and logic changes. Do not blindly trust community submissions.',
-    '- **Zero Tolerance for AI Slop**: Many PRs are generated hastily by coding agents without testing. Ensure logic is sound, error handling is thorough, and no regressions are introduced.',
+    '- **Zero Tolerance for AI Slop**: Many requests are generated hastily by coding agents without testing. Ensure logic is sound, error handling is thorough, and no regressions are introduced.',
     ...(prVerification && !prVerification.passed ? [
-      '- ⚠️ **CRITICAL: Local automated verification has FAILED.** You MUST NOT approve or merge this PR. Clearly point out the failure logs and what the author needs to fix.',
+      `- ⚠️ **CRITICAL: Local automated verification has FAILED.** You MUST NOT approve or merge this ${words.request}. Clearly point out the failure logs and what the author needs to fix.`,
     ] : []),
     '- **Decision Standards**:',
     autoMergeAllowed && (!prVerification || prVerification.passed)
       ? '  - Conclude your report with `DECISION: MERGE` ONLY if all automated checks passed AND your line-by-line review confirms the code is robust and bug-free.'
       : '  - Conclude your report with `DECISION: APPROVE` if all tests passed and the code is clean (human maintainer will merge).',
     '  - Conclude your report with `DECISION: REQUEST_CHANGES` if tests failed, or if you found bugs, flaws, or missing tests.',
-    '  - Conclude your report with `DECISION: CLOSE` if the PR is spam, malicious, completely misguided, or unfixable.',
+    `  - Conclude your report with \`DECISION: CLOSE\` if the ${words.request} is spam, malicious, completely misguided, or unfixable.`,
     '',
     ...standing.filter(Boolean).flatMap(rule => ['', rule]),
     ...instructions.trim() ? ['', '## Team instructions', '', instructions.trim()] : [],
@@ -111,6 +117,7 @@ export function composePrompt(input: PromptInput): string {
     return composePrReviewPrompt(input)
   }
   const { ticket, trigger, repository, agentLogin, branchPrefix, instructions, source = 'github', branch, standing = [], notes = [] } = input
+  const words = forgeWords(source)
   const asked = trigger
     ? `A person wrote this in ${trigger.url ?? trigger.channel?.thread ?? 'the source conversation'}:\n\n${quote(trigger.text)}`
     : `The ticket has no source message; work on the title alone:\n\n${quote(ticket.title)}`
@@ -119,8 +126,8 @@ export function composePrompt(input: PromptInput): string {
     '',
     ...source === 'feishu'
       ? [`You work on the repository \`${repository}\`. The request came from a chat, which has no branch of its own, so open your`,
-        'pull request from a new branch and say in your report where the person can find it.']
-      : [`You work on the repository \`${repository}\`. Your GitHub account is \`${agentLogin}\`; every GitHub action you take is`,
+        `${words.request} from a new branch and say in your report where the person can find it.`]
+      : [`You work on the repository \`${repository}\`. Your ${words.name} account is \`${agentLogin}\`; every ${words.name} action you take is`,
         'visible to the team under that name.'],
     '',
     '## The request',
@@ -132,10 +139,10 @@ export function composePrompt(input: PromptInput): string {
     '',
     `- Work only in this directory. It is a worktree of the repository on a new branch.`,
     branch
-      ? `- Commit on the branch \`${branch}\`, which this directory is already on, and open a pull request from it when done.`
-      : `- Put your branch under \`${branchPrefix}\` followed by a short name, and open a pull request from it when done.`,
+      ? `- Commit on the branch \`${branch}\`, which this directory is already on, and open a ${words.request} from it when done.`
+      : `- Put your branch under \`${branchPrefix}\` followed by a short name, and open a ${words.request} from it when done.`,
     '- Run the tests the repository has. Do not claim a check passed unless you ran it.',
-    '- Do not merge the pull request. A person merges it.',
+    `- Do not merge the ${words.request}. A person merges it.`,
     '- If the request needs a decision you cannot make, stop and ask one concrete question.',
     ...input.readOnly ? [
       '- Autonomous run mode: you may inspect, search, and run tests, but do NOT push commits or make permanent mutations.',

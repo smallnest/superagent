@@ -1,11 +1,11 @@
 ---
 name: superagent
-description: Run an agent that turns requests from GitHub issues, Feishu chats, or Twitter/X mentions into tickets and executes each ticket on a configurable coding agent (Claude Code, Codex, opencode). Use when the user wants an agent to watch a repository, a chat, or Twitter keywords, act on @ mentions, and record its work as plain files instead of a dashboard; when they ask what superagent has done, which tickets are open, or to change which coding agent runs tickets.
+description: Run an agent that turns requests from GitHub issues, GitLab to-dos and merge requests, Feishu chats, or Twitter/X mentions into tickets and executes each ticket on a configurable coding agent (Claude Code, Codex, opencode). Use when the user wants an agent to watch a repository, a project, a chat, or Twitter keywords, act on @ mentions, and record its work as plain files instead of a dashboard; when they ask what superagent has done, which tickets are open, or to change which coding agent runs tickets.
 ---
 
 # Superagent
 
-Superagent listens to GitHub and Feishu. A request that names the agent becomes a **ticket**. Each ticket runs on a
+Superagent listens to GitHub, GitLab and Feishu. A request that names the agent becomes a **ticket**. Each ticket runs on a
 coding agent you choose, in its own worktree, and records itself as files on disk. When the agent reports it is done,
 the summary goes back as a reply in the conversation that asked.
 
@@ -71,6 +71,11 @@ github:
   repository: owner/name
   cli: gh-agent         # the CLI that acts as the agent's account
   allowed: [alice]      # GitHub logins
+gitlab:
+  host: gitlab.com      # or a self-managed host, optionally with a port
+  project: group/project
+  cli: glab-agent       # the CLI that acts as the agent's account on that host
+  allowed: [alice]      # GitLab usernames
 feishu:
   cli: lark-bot         # the CLI that acts as the bot
   chats: [{ chatId: oc_..., name: Team }]
@@ -82,6 +87,9 @@ twitter:
   pollSeconds: 300      # how often to search for new tweets
   allowed: []           # empty accepts any user matching query
 ```
+
+One installation serves one forge: turn off either `github.enabled` or `gitlab.enabled`. The worker's git credentials and
+CLI shims bind to one account, so a second forge would share them.
 
 The agent acts only as the accounts those CLIs are signed in to. Never point `cli` at a personal login: everything the
 agent writes would appear under that person's name.
@@ -157,12 +165,12 @@ In autonomous runs (unaddressed messages, timers, watchers), tools are automatic
 | Command | Does |
 | --- | --- |
 | `superagent init [dir]` | create `settings.yaml` and the state directory; a second run keeps both |
-| `superagent setup [dir] [github\|feishu] [--allow a,b] [--chat id\|name]` | fill the GitHub and Feishu sections from the configured CLIs; a CLI that cannot answer changes nothing and exits 1 |
+| `superagent setup [dir] [github\|gitlab\|feishu] [--allow a,b] [--chat id\|name]` | fill the Source sections from the configured CLIs; a CLI that cannot answer changes nothing and exits 1 |
 | `superagent status [dir]` | print open and ended tickets, and the recent judgements of unaddressed messages, as Markdown |
-| `superagent doctor [dir]` | show installed agents and the selected one |
+| `superagent doctor [dir]` | show installed agents, the selected one, and the Source project |
 | `superagent agents` | list the agent names a configuration may use |
 | `superagent run [dir] -p <text>` | run one prompt on the configured agent and print its report |
-| `superagent poll [dir] [--once]` | read GitHub notifications, accept mentions as tickets, and run them |
+| `superagent poll [dir] [--once]` | read the Source's to-dos or notifications, accept them as tickets, and run them |
 
 The first argument is the installation directory and defaults to the current directory.
 
@@ -176,6 +184,8 @@ The first argument is the installation directory and defaults to the current dir
 | `Selected: **x** — not installed` | Install that CLI or choose another `executor.agent`. |
 | A ticket ends with a failed report | Read `state/tickets/<id>/log.md`; the agent's last message is at the end. |
 | Nothing happens after a mention | Check the author is on the allow list and `enabled` is true for that Source. |
+| `glab ... 404` or a project not found | `gitlab.project` is the path, not the numeric id; `host` must name the instance `glab` is signed in to. |
+| `one installation serves one forge` | Set `github.enabled` or `gitlab.enabled` to false; the worker's credentials bind to one account. |
 
 ## Going further
 

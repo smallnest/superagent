@@ -33,12 +33,16 @@ export interface PrepareWorktreeOptions {
   branch: string
   prNumber?: number
   repository?: string
+  /** The ref holding the review's head, such as `pull/42/head` or `refs/merge-requests/42/head`. */
+  ref?: string
+  /** The URL to fetch the ref from when the checkout's `origin` is not the forge's repository. */
+  remote?: string
   signal?: AbortSignal
 }
 
 /**
  * Creates the worktree for a ticket and returns its directory.
- * When `prNumber` is specified, fetches the PR branch/head and checks it out directly into the worktree.
+ * When `prNumber` is specified, fetches the review's head and checks it out directly into the worktree.
  *
  * @throws when git cannot create the worktree, such as when the checkout has no commit yet; the caller then reports the
  * ticket as failed instead of starting an agent in a directory that is not the repository.
@@ -50,14 +54,16 @@ export async function prepareWorktree(options: PrepareWorktreeOptions): Promise<
   if (!await isGitRepository(checkout)) return directory
 
   if (prNumber) {
+    const head = options.ref ?? `pull/${prNumber}/head`
+    const remote = options.remote ?? (repository ? `https://github.com/${repository}.git` : undefined)
     let fetched = false
     try {
-      await run('git', ['-C', checkout, 'fetch', 'origin', `pull/${prNumber}/head:${branch}`], { signal, timeoutMs: 60_000 })
+      await run('git', ['-C', checkout, 'fetch', 'origin', `${head}:${branch}`], { signal, timeoutMs: 60_000 })
       fetched = true
     } catch {
-      if (repository) {
+      if (remote) {
         try {
-          await run('git', ['-C', checkout, 'fetch', `https://github.com/${repository}.git`, `pull/${prNumber}/head:${branch}`], { signal, timeoutMs: 60_000 })
+          await run('git', ['-C', checkout, 'fetch', remote, `${head}:${branch}`], { signal, timeoutMs: 60_000 })
           fetched = true
         } catch { /* fallback to base HEAD */ }
       }
@@ -66,7 +72,7 @@ export async function prepareWorktree(options: PrepareWorktreeOptions): Promise<
       await run('git', ['-C', checkout, 'worktree', 'add', directory, branch], { signal, timeoutMs: 120_000 })
         .catch(async error => {
           await removeWorktree(checkout, directory, signal, branch)
-          throw new Error(`${directory} is not a branch point for PR #${prNumber}: ${(error as Error).message}`, { cause: error })
+          throw new Error(`${directory} is not a branch point for review #${prNumber}: ${(error as Error).message}`, { cause: error })
         })
       return directory
     }
