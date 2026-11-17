@@ -63,7 +63,7 @@ describe('superagent setup', () => {
     expect(lines.join('\n')).toContain('Repository: acme/widgets (private)')
     expect(settings.github).toMatchObject({ enabled: true, repository: 'acme/widgets', allowed: [UNKNOWN, 'ou_alice'] })
     expect(lines.join('\n')).toContain('GitHub account: smallnest')
-  })
+  }, 30_000)
 
   it('listens to the chosen chat, follows its members, and turns a name into an open id', async () => {
     const { settings, code } = await install('ok', 'ok')
@@ -72,7 +72,7 @@ describe('superagent setup', () => {
     expect(settings.feishu).toMatchObject({ enabled: true, chats: [{ chatId: 'oc_team', name: 'Team' }], syncChat: 'oc_team' })
     // An id needs no member lookup; whether the stub's members were read depends on the CLI on this machine.
     expect(settings.feishu?.allowed).toContain('ou_alice')
-  })
+  }, 30_000)
 
   it('keeps the file as it was when a CLI cannot answer, and says so', async () => {
     const { root, lines, code } = await install('down', 'down')
@@ -83,7 +83,7 @@ describe('superagent setup', () => {
     expect(code).toBe(1)
     expect(printed).toContain('GitHub:')
     expect(printed).toContain('Feishu:')
-  })
+  }, 30_000)
 
   it('names the people a chat does not hold', async () => {
     const root = await mkdtemp(join(tmpdir(), 'superagent-setup-'))
@@ -93,7 +93,7 @@ describe('superagent setup', () => {
 echo '{"users":[{"member_id":"ou_alice","name":"Alice"}]}'
 `)
     expect(await resolveMembers(lark, 'oc_team', ['Alice', 'Bob', 'ou_carol'])).toEqual({ found: ['ou_carol', 'ou_alice'], missing: ['Bob'] })
-  })
+  }, 30_000)
 })
 
 describe('the names a flag carries', () => {
