@@ -164,7 +164,7 @@ import { WatcherEngine } from './infra/watchers.ts'
 import { claudeAssessor } from './assess.ts'
 import { assessing, type Decided } from './assessing.ts'
 import { agentLogin, pollNotifications, pollOpenPullRequests } from './sources/github.ts'
-import { closeIssue, closeMergeRequest, gitlabLogin, issueTrigger, listOpenIssues, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
+import { closeIssue, closeMergeRequest, getIssue, gitlabLogin, issueTrigger, listOpenIssues, mergeMergeRequest, pollOpenMergeRequests, pollTodos, replyNote } from './sources/gitlab.ts'
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, recentMessages, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
 import { MemoryStore, WorkflowStore, memoryCommand, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
@@ -695,6 +695,31 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     }
     await say(`#${command.iid} 现在不接受这个决定。`, `state-${command.iid}-${Date.now()}`)
   }
+  /**
+   * Moves on from an issue GitLab now has closed, which a person may do outside the workflow: the local record is a
+   * snapshot, and without this check a closed issue would sit at "waiting" and block the queue.
+   */
+  const reconcileWorkflow = async (): Promise<void> => {
+    if (!workflow || !workflowStore || !gitlab) return
+    for (const record of await workflowStore.all()) {
+      if (record.phase !== 'waiting' && record.phase !== 'working' && record.phase !== 'closing') continue
+      try {
+        const issue = await getIssue({ cli: gitlab.cli, host: gitlab.host, project: gitlab.project, iid: record.iid, signal })
+        if (issue.state !== 'closed') continue
+        await workflowStore.save({ ...record, phase: 'done', at: new Date().toISOString() })
+        if (record.ticketId) {
+          executor.forget(record.ticketId)
+          try { engine.stopTicket(record.ticketId, 'issueClosed') } catch { /* the ticket already ended */ }
+        }
+        log(`#${record.iid} is closed on GitLab; the workflow moves on`)
+        if (feishu && workflow.user) {
+          await sendMessage(feishu.cli, { userId: workflow.user }, `#${record.iid} 在 GitLab 上已关闭，跳过。`,
+            `closed-${record.iid}-${new Date().toISOString().slice(0, 10)}`, signal)
+            .catch(error => log(`Could not say #${record.iid} was closed: ${(error as Error).message}`))
+        }
+      } catch (error) { if (!signal.aborted) log(`Could not read #${record.iid}: ${(error as Error).message}`) }
+    }
+  }
   /** Proposes the next labeled issue when nothing waits for a yes, a turn, or a close. */
   const proposeIssue = async (): Promise<void> => {
     if (!workflow || !workflowStore || !gitlab) return
@@ -921,7 +946,7 @@ export async function runLoop(options: LoopOptions): Promise<void> {
           }
         }
       }
-      if (workflow) { await proposeIssue(); await pollWorkflowDm(); await reviewMemory() }
+      if (workflow) { await reconcileWorkflow(); await proposeIssue(); await pollWorkflowDm(); await reviewMemory() }
       if (twitter) {
         try {
           const triggers = await searchTweets(twitter.cli, twitter.query, {

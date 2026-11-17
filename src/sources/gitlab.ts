@@ -248,8 +248,7 @@ export const IssueSchema = z.looseObject({
 })
 export type Issue = z.infer<typeof IssueSchema>
 
-/** The open issues carrying `label`, which is the workflow's queue. */
-export async function listOpenIssues(input: {
+/** The open issues carrying `label`, which is the workflow's queue. */export async function listOpenIssues(input: {
   cli: string
   host: string
   project: string
@@ -290,4 +289,9 @@ export async function closeIssue(input: { cli: string; host: string; project: st
   await run(input.cli, apiArgs(input.host, `projects/${projectPath(input.project)}/issues/${input.iid}`, [
     '--method', 'PUT', '--field', 'state_event=close',
   ]), { signal: input.signal })
+}
+
+/** One issue as GitLab has it now, which is how the workflow notices an issue closed outside it. */
+export async function getIssue(input: { cli: string; host: string; project: string; iid: number; signal?: AbortSignal }): Promise<Issue> {
+  return runJson<Issue>(input.cli, apiArgs(input.host, `projects/${projectPath(input.project)}/issues/${input.iid}`), { signal: input.signal })
 }

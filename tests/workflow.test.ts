@@ -40,6 +40,7 @@ case "$*" in
 ${JSON.stringify(issues)}
 JSON
     ;;
+  *"issues/2551") cat ${JSON.stringify(join(bin, 'issue-2551.json'))} ;;
   *) echo '{}' ;;
 esac
 `, { mode: 0o755 })
@@ -59,6 +60,7 @@ cat > /dev/null
 mkdir -p .superagent
 printf '{"summary":"Removed the dead addresses.","state":"ready","prs":[]}' > .superagent/report.json
 `, { mode: 0o755 })
+  await writeFile(join(bin, 'issue-2551.json'), JSON.stringify(issues.find(issue => (issue as { iid?: number }).iid === 2551) ?? issues[0] ?? {}))
   for (const file of [glab, lark, join(bin, 'fake-agent')]) await chmod(file, 0o755)
   return { glab, lark, event }
 }
@@ -131,6 +133,39 @@ describe('the issue workflow', () => {
     await until(async () => (await calls()).includes('state_event=close'))
     expect((await store.get(2585))?.phase).toBe('done')
     expect(await calls()).toContain('glab api --hostname gitlab.example.com projects/acme%2Fwidgets/issues/2585 --method PUT --field state_event=close')
+  }, 90_000)
+
+  it('moves on when GitLab has closed the issue outside the workflow', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'superagent-workflow-'))
+    dirs.push(root)
+    const bin = join(root, 'bin')
+    const first = { ...issue, iid: 2551, title: 'A gRPC edge', web_url: 'https://gitlab.example.com/acme/widgets/-/issues/2551' }
+    const second = { ...issue, iid: 2552, title: 'Another gRPC edge', web_url: 'https://gitlab.example.com/acme/widgets/-/issues/2552' }
+    const { glab, lark } = await fakes(bin, [first, second])
+    await mkdir(join(root, 'work'), { recursive: true })
+    const settings = SettingsSchema.parse({
+      stateDir: join(root, 'state'), checkout: join(root, 'work'),
+      gitlab: { enabled: true, host: 'gitlab.example.com', project: 'acme/widgets', cli: glab, allowed: ['alice'] },
+      feishu: { enabled: true, cli: lark, chats: [], directMessages: true, allowed: ['ou_alice'] },
+      workflow: { enabled: true, label: 'superagent', user: 'ou_alice' },
+      executor: { agent: 'codex', binary: join(bin, 'fake-agent') },
+      assess: { binary: join(bin, 'no-assessor') },
+    })
+    const repo = new FileRepositories(settings.stateDir)
+    await repo.open()
+    const store = new WorkflowStore(settings.stateDir)
+    const run = async (): Promise<void> => {
+      await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true, finish: true })
+    }
+
+    await run()
+    expect((await store.get(2551))?.phase).toBe('waiting')
+
+    // A person closes #2551 on GitLab; the local record must follow rather than block the queue.
+    await writeFile(join(bin, 'issue-2551.json'), JSON.stringify({ ...first, state: 'closed' }))
+    await run()
+    expect((await store.get(2551))?.phase).toBe('done')
+    expect((await store.get(2552))?.phase).toBe('waiting')
   }, 90_000)
 
   it('skips the issue when the operator says no', async () => {
