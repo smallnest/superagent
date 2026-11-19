@@ -167,6 +167,7 @@ In autonomous runs (unaddressed messages, timers, watchers), tools are automatic
 
 | Command | Does |
 | --- | --- |
+| `superagent --version` | print the version this build ships |
 | `superagent init [dir]` | create `settings.yaml` and the state directory; a second run keeps both |
 | `superagent setup [dir] [github\|gitlab\|feishu] [--allow a,b] [--chat id\|name]` | fill the Source sections from the configured CLIs; a CLI that cannot answer changes nothing and exits 1 |
 | `superagent status [dir]` | print open and ended tickets, and the recent judgements of unaddressed messages, as Markdown |

@@ -4,9 +4,11 @@
  * The command prints Markdown because people and agents both read it: an agent that needs to know what is open runs
  * `superagent status` and gets an answer it can put straight into a prompt.
  */
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { mkdir, stat } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { AGENT_NAMES, installed, reportInstructions, runnerFor, type AgentName } from './agents/index.ts'
 import { readState, FileRepositories } from './state/files.ts'
 import { runLoop } from './runner.ts'
@@ -14,8 +16,20 @@ import { reasonText } from './core/index.ts'
 import { defaultSettings, readSettings, SETTINGS_FILE, writeSettings } from './settings.ts'
 import { names, setup } from './setup.ts'
 
+/** The version this build ships, read from the `package.json` beside it rather than copied into the source. */
+function packageVersion(): string {
+  try {
+    const path = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { version?: unknown }
+    return typeof parsed.version === 'string' ? parsed.version : 'unknown'
+  } catch { return 'unknown' }
+}
+
+export const VERSION = packageVersion()
+
 const USAGE = `superagent — an agent that turns GitHub, GitLab and Feishu requests into tickets
 
+  superagent --version             print the version
   superagent init [dir]            create ${SETTINGS_FILE} and the state directory in dir (default: .)
   superagent setup [dir] [what…]   fill the Source settings from the configured CLIs
   superagent status [dir]          print open tickets and recent activity as Markdown
@@ -181,6 +195,9 @@ export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...rest] = argv
   const dirOf = (index: number): string => rest[index] && !rest[index]!.startsWith('-') ? resolve(rest[index]!) : process.cwd()
   switch (command) {
+    case '--version': case '-v': case 'version':
+      process.stdout.write(`superagent ${VERSION}\n`)
+      return 0
     case 'init': return init(rest[0] ? resolve(rest[0]) : process.cwd())
     case 'setup': return setupSources(dirOf(0), rest)
     case 'status': return status(dirOf(0))

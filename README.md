@@ -24,6 +24,7 @@ $EDITOR settings.yaml       # choose executor.agent; adjust what setup filled
 superagent doctor           # confirms the chosen agent is installed
 superagent run . -p "Read README.md and summarise it in one sentence."
 superagent status
+superagent --version
 ```
 
 `superagent setup` asks the CLIs that already know the answers, so no id is copied from a web page:
