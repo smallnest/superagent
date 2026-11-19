@@ -3,7 +3,7 @@
  * a mention becomes a Trigger, the Trigger becomes a ticket, the ticket runs, and its report comes back.
  */
 import { execFileSync } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -43,6 +43,8 @@ esac
 cat > /dev/null
 mkdir -p .superagent
 touch ${JSON.stringify(bin)}/turns.$$_$(date +%s)
+git rev-parse --abbrev-ref HEAD > ${JSON.stringify(bin)}/branch.$$ 2>/dev/null || true
+git rev-parse HEAD > ${JSON.stringify(bin)}/head.$$ 2>/dev/null || true
 if [ -n "$GATE" ]; then while [ -e "$GATE" ]; do sleep 0.05; done; fi
 printf '{"summary":"Fixed the typo.","state":"ready","prs":[]}' > .superagent/report.json
 `, { mode: 0o755 })
@@ -88,20 +90,36 @@ describe('a poll round', () => {
     const triggers = [...repo.keys()].filter(name => name.startsWith('trigger:'))
     expect(triggers.length).toBeGreaterThan(0)
 
-    // The ticket ran in its own worktree, on a branch of its own, so it cannot disturb the operator's checkout.
+    // The ticket ran in its own worktree, on a branch of its own, so it cannot disturb the operator's checkout. The turn
+    // records what it saw, because the worktree itself is removed when the ticket ends.
     const branch = ticketBranch(settings.branchPrefix, tickets[0]!.title, tickets[0]!.id)
-    const current = execFileSync('git', ['-C', join(settings.stateDir, 'work', tickets[0]!.id), 'rev-parse', '--abbrev-ref', 'HEAD']).toString().trim()
-    expect(current).toBe(branch)
-    const parent = execFileSync('git', ['-C', join(settings.stateDir, 'work', tickets[0]!.id), 'rev-parse', 'HEAD']).toString().trim()
-    expect(parent).toBe(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD']).toString().trim())
+    const marker = async (prefix: string): Promise<string> => {
+      let text = ''
+      // The shell creates the redirection's file before `git` writes to it, so wait for content, not for the file.
+      await until(async () => {
+        const name = (await readdir(bin)).find(item => item.startsWith(prefix))
+        text = name ? (await readFile(join(bin, name), 'utf8')).trim() : ''
+        return text.length > 0
+      })
+      return text
+    }
+    expect(await marker('branch.')).toBe(branch)
+    expect(await marker('head.')).toBe(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD']).toString().trim())
 
     // A second round records the report the agent wrote and ends the ticket with it.
     await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true })
     const ended = repo.tickets.list()[0]!
-    const log = join(settings.stateDir, 'work', ended.id, '.superagent', 'log.md')
+    const log = join(settings.stateDir, 'tickets', ended.id, 'log.md')
     // The turn writes its log as it ends, so wait for the entry itself instead of guessing how long the turn takes.
     await until(async () => (await readFile(log, 'utf8').catch(() => '')).includes('Fixed the typo.'), 20_000)
-    expect(await readFile(log, 'utf8'), 'the agent run is recorded beside its worktree').toContain('Fixed the typo.')
+    expect(await readFile(log, 'utf8'), 'the agent run is recorded beside the ticket, not only in its worktree').toContain('Fixed the typo.')
+
+    // The ticket ended, so its worktree and branch are gone; the log and the ticket's record remain.
+    const worktree = join(settings.stateDir, 'work', ended.id)
+    const branchExists = (): boolean => execFileSync('git', ['-C', root, 'branch', '--list', branch]).toString().trim() !== ''
+    await until(async () => repo.tickets.list()[0]!.ended !== undefined
+      && !(await stat(worktree).then(() => true, () => false)) && !branchExists(), 20_000)
+    expect(branchExists()).toBe(false)
   }, 30_000)
 
   it('ignores a mention from a login that is not allowed', async () => {
@@ -204,7 +222,8 @@ describe('a poll round with a worker limit', () => {
       channels: [], assignments: [{ id: 'assignment-1', state: 'running', createdAt: at, startedAt: at }],
       inputs: [{ id: 'input-1', kind: 'text', text: 'Please fix the typo.', at }], undelivered: [], origin: { triggerId: 'trigger-1', triggerIds: ['trigger-1'] },
     } as never)
-    await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true })
+    // `finish` waits for the turn and its cleanup, so the temp directory is not removed under a running git command.
+    await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true, finish: true })
     await until(async () => repo.tickets.list()[0]!.assignments.at(-1)?.report?.state === 'ready', 20_000)
     const ticket = repo.tickets.list()[0]!
     // The assignment that claimed to run ended as one the host interrupted, and a new one did the work.
@@ -215,7 +234,7 @@ describe('a poll round with a worker limit', () => {
     expect(ticket.assignments[1]).toMatchObject({ startedAt: expect.any(String), report: { state: 'ready' } })
     expect(ticket.inputs.some(input => input.kind === 'text' && input.text.includes('The host restarted'))).toBe(true)
     // A fresh turn reads no session, so the recovery note goes into the prompt it works from.
-    const log = await readFile(join(settings.stateDir, 'work', ticket.id, '.superagent', 'log.md'), 'utf8')
+    const log = await readFile(join(settings.stateDir, 'tickets', ticket.id, 'log.md'), 'utf8')
     expect(log).toContain('## Notes since the start')
     expect(log).toContain('The host restarted during this ticket.')
     expect(ticket.inputs.map(input => input.kind)).toEqual(['text', 'text'])

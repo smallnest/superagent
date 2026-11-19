@@ -92,9 +92,9 @@ async function until(check: () => Promise<boolean>, ms = 20_000): Promise<void> 
   }
 }
 
-/** Runs one round and returns what the state now holds. */
+/** Runs one round, waiting for the turns it started and their cleanup: a later round must not treat them as interrupted. */
 async function round(settings: ReturnType<typeof SettingsSchema.parse>, repo: FileRepositories): Promise<void> {
-  await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true })
+  await runLoop({ settings, repo, signal: new AbortController().signal, log: () => {}, once: true, finish: true })
 }
 
 describe('a GitLab to-do', () => {

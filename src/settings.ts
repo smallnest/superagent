@@ -27,7 +27,10 @@ const ExecutorSchema = z.object({
   prepare: z.string().default(''),
   /** Commands a ticket may not run. */
   blockedCommands: z.array(z.string()).default([]),
-  /** Whether each ticket gets its own worktree and branch. False runs in `checkout`, on its current branch. */
+  /**
+   * Whether each ticket gets its own worktree and branch. False runs in `checkout`, on its current branch. True removes the
+   * worktree and branch when the ticket ends, after pushing the commits only they hold.
+   */
   worktree: z.boolean().default(true),
 })
 

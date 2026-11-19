@@ -147,7 +147,7 @@ async function send(
   }
 }
 
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Engine, type Executor, type Outbox, type OutboundMessage, type Ticket, type Trigger, type Assignment, latestReport, runningAssignment } from './core/index.ts'
 import { runnerFor, type AgentName, type AgentReport, type AgentRunner } from './agents/index.ts'
@@ -168,7 +168,7 @@ import { closeIssue, closeMergeRequest, getIssue, gitlabLogin, issueTrigger, lis
 import { botIdentity, chatMembers, consumeEvents, feishuTrigger, recentMessages, reply, sendMessage, type StreamHandle } from './sources/feishu.ts'
 import { MemoryStore, WorkflowStore, memoryCommand, nextIssue, runChecks, workflowCommand, type Command } from './workflow.ts'
 import { replyTweet, searchTweets, twitterAccount } from './sources/twitter.ts'
-import { prepareWorktree, ticketBranch } from './infra/worktree.ts'
+import { cleanupWorktree, prepareWorktree, ticketBranch } from './infra/worktree.ts'
 import { runPrVerification } from './infra/pr-verifier.ts'
 
 /** Where the loop keeps its own bookkeeping, beside the domain state. */
@@ -213,6 +213,8 @@ class AgentExecutor implements Executor {
   private readonly held = new Map<string, { ticket: Ticket; assignment: Assignment }>()
   /** The questions being sent, which a finishing run waits for so a DM is not cut off by its own exit. */
   private readonly asks = new Set<Promise<void>>()
+  /** Tickets whose worktree a cleanup is removing, so two sweeps do not push and remove it at once. */
+  private readonly cleaning = new Set<string>()
   private pumping = false
   constructor(private readonly options: {
     settings: Settings
@@ -321,12 +323,20 @@ class AgentExecutor implements Executor {
     })
   }
 
-  /** Resolves when no turn runs, none waits for a slot, and every question has gone out. */
+  /** Whether no turn runs, none waits for a slot, every question has gone out, and no worktree is being cleaned. */
+  private quiet(): boolean {
+    return !this.active.size && !this.pending.length && !this.asks.size && !this.cleaning.size
+  }
+
+  /**
+   * Resolves when no turn runs, none waits for a slot, every question has gone out, and every ended ticket's cleanup has
+   * finished: a one-round process must not exit in the middle of a push.
+   */
   idle(): Promise<void> {
-    if (!this.active.size && !this.pending.length && !this.asks.size) return Promise.resolve()
+    if (this.quiet()) return Promise.resolve()
     return new Promise(resolve => {
       const timer = setInterval(() => {
-        if (this.active.size || this.pending.length || this.asks.size) return
+        if (!this.quiet()) return
         clearInterval(timer)
         resolve()
       }, 50)
@@ -350,7 +360,7 @@ class AgentExecutor implements Executor {
       // Each ticket gets its own branch off the checkout's HEAD, or checks out the review's head.
       const branch = shared ? undefined : ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
       if (!shared && branch) {
-        await prepareWorktree({
+        const prepared = await prepareWorktree({
           checkout: settings.checkout,
           directory,
           branch,
@@ -361,6 +371,16 @@ class AgentExecutor implements Executor {
             : {},
           signal: controller.signal,
         })
+        // A ticket that ended once was cleaned; a person's message can resume it, and this turn builds its worktree again,
+        // so its next end must clean again.
+        this.options.repo?.setMeta(`worktree:cleaned:${ticket.id}`, undefined)
+        // What cleanup needs to know later: the branch and base when this run made the worktree, and that a review's
+        // branch is someone else's and must not be pushed. An existing worktree keeps the record it already has.
+        if (prepared.base !== undefined || prepared.review) {
+          await mkdir(join(stateDir, 'tickets', ticket.id), { recursive: true })
+          await writeFile(join(stateDir, 'tickets', ticket.id, 'worktree.json'),
+            `${JSON.stringify({ branch, ...prepared.base !== undefined ? { base: prepared.base } : {}, review: prepared.review }, null, 2)}\n`, 'utf8')
+        }
       }
 
       if (settings.executor.prepare) await run('/bin/sh', ['-c', settings.executor.prepare], { env: this.variables(ticket, directory, branch), timeoutMs: 120_000 })
@@ -446,7 +466,7 @@ class AgentExecutor implements Executor {
           createdAt: new Date().toISOString(),
         })
       }
-      await appendLog(directory, prompt, result.raw.slice(-20_000), report)
+      await appendLog(stateDir, ticket.id, prompt, result.raw.slice(-20_000), report)
       site.reported(ticket.id, { state: report.state ?? (result.ok ? 'ready' : 'failed'), summary: report.summary, question: report.question ?? null })
       // The workflow's summary and close question follow the report; a Feishu outage is a log line, not a lost turn.
       const workflowTrigger = repo?.triggers.get(ticket.origin.triggerId)
@@ -460,6 +480,56 @@ class AgentExecutor implements Executor {
       this.active.delete(ticket.id)
       // The free slot goes to the next waiting ticket; a report that arrived with the turn is finished and must not start it.
       this.pump()
+      // The turn is really over here, after the workflow's summary and verification read the directory: only now may the
+      // worktree go, and only after whatever exists only in it has been pushed or saved.
+      await this.cleanupEnded()
+    }
+  }
+
+  /** Whether a ticket still holds work or a directory: its turn runs, waits for a slot, waits for the operator, or is cleaned. */
+  private busy(ticketId: string): boolean {
+    return this.active.has(ticketId) || this.held.has(ticketId)
+      || this.pending.some(item => item.ticket.id === ticketId) || this.cleaning.has(ticketId)
+  }
+
+  /**
+   * Removes the worktrees of tickets that ended, after pushing the commits only they hold and saving any uncommitted work.
+   *
+   * A ticket whose turn still runs, whose held turn waits for the operator, or whose push failed is left for a later round:
+   * the worktree is the only copy until the push succeeds, so it is not removed on a failed push.
+   */
+  async cleanupEnded(): Promise<void> {
+    const { settings, repo, stateDir, accounts, log } = this.options
+    if (!repo || settings.executor.worktree === false) return
+    for (const ticket of repo.tickets.list()) {
+      if (!ticket.ended || this.busy(ticket.id) || repo.getMeta(`worktree:cleaned:${ticket.id}`)) continue
+      this.cleaning.add(ticket.id)
+      try {
+        const directory = ticket.execution?.directory ?? join(stateDir, 'work', ticket.id)
+        let recorded: { branch?: string; base?: string; review?: boolean } = {}
+        // The record this run wrote when it made the worktree; an older worktree has none, and its cleanup falls back to
+        // the branch name it can derive and whatever the remote already has.
+        try { recorded = JSON.parse(await readFile(join(stateDir, 'tickets', ticket.id, 'worktree.json'), 'utf8')) } catch { /* no record */ }
+        const trigger = repo.triggers.get(ticket.origin.triggerId)
+        const branch = recorded.branch ?? ticketBranch(settings.branchPrefix, ticket.title, ticket.id)
+        const review = recorded.review === true || trigger?.meta?.isPr === true
+        const result = await cleanupWorktree({
+          checkout: settings.checkout, stateDir, ticketId: ticket.id, directory, branch,
+          base: recorded.base, review, env: runEnvironment(accounts, {}),
+        })
+        if (result.skipped) {
+          // A path this installation does not own is not cleanup's to remove; record it once rather than retrying every round.
+          repo.setMeta(`worktree:cleaned:${ticket.id}`, { at: new Date().toISOString(), directory, skipped: result.skipped })
+          log?.(`Kept ${directory} of ${ticket.id}: it is not a ticket worktree`)
+          continue
+        }
+        repo.setMeta(`worktree:cleaned:${ticket.id}`, { at: new Date().toISOString(), directory, branch })
+        if (result.pushed) log?.(`Pushed ${branch} of ${ticket.id} before removing its worktree`)
+        log?.(`Removed the worktree of ${ticket.id}`)
+      } catch (error) {
+        // A failed push is the reason to keep it: the next round tries again, and nothing local is lost meanwhile.
+        log?.(`Kept the worktree of ${ticket.id}: ${(error as Error).message}`)
+      } finally { this.cleaning.delete(ticket.id) }
     }
   }
 
@@ -486,13 +556,15 @@ function inferReport(text: string, ok: boolean): AgentReport {
   }
 }
 
-async function appendLog(directory: string, prompt: string, raw: string, report: AgentReport): Promise<void> {
-  const path = join(directory, '.superagent', 'log.md')
+async function appendLog(stateDir: string, ticketId: string, prompt: string, raw: string, report: AgentReport): Promise<void> {
+  // Beside the ticket rather than in its worktree: the worktree is removed when the ticket ends, and this is the record of
+  // what the agent did.
+  const path = join(stateDir, 'tickets', ticketId, 'log.md')
   const entry = ['', `## ${new Date().toISOString()}`, '', '**Prompt**', '', '```', prompt, '```', '', '**Report**', '', '```json', JSON.stringify(report, null, 2), '```',
     '', '**Agent output**', '', '```', raw, '```'].join('\n')
   // `appendFile` rather than a read and a rewrite: a stream can end several turns of one ticket at once, and each turn must
   // keep its entry.
-  await mkdir(join(directory, '.superagent'), { recursive: true }).then(() => appendFile(path, `${entry}\n`))
+  await mkdir(join(stateDir, 'tickets', ticketId), { recursive: true }).then(() => appendFile(path, `${entry}\n`))
 }
 
 export interface LoopOptions {
@@ -1033,6 +1105,10 @@ export async function runLoop(options: LoopOptions): Promise<void> {
       await repo.flush()
       await send(channel, destinations, log, settings.attention, markSent)
       await repo.flush()
+      // A ticket can end outside a turn, such as one the operator declined or one whose issue was closed on GitLab; its
+      // worktree is cleaned here, while a turn's own cleanup waits in `execute`'s finally.
+      await executor.cleanupEnded()
+      await repo.flush()
       await sync()
     } catch (error) {
       if (!signal.aborted) log(`Round failed: ${(error as Error).message}\n${(error as Error).stack?.split('\n').slice(1, 4).join('\n')}`)
@@ -1061,6 +1137,9 @@ export async function runLoop(options: LoopOptions): Promise<void> {
     deliver(engine, repo, delivered, log)
     await repo.flush()
     await send(channel, destinations, log, settings.attention, markSent)
+    await repo.flush()
+    // Turns that ended during `idle()` cleaned themselves; this covers one ended by a command after the last round.
+    await executor.cleanupEnded()
     await repo.flush()
   }
   // The stream starts with the first round, and a stream that ended starts again with the next one, so it lives past a round

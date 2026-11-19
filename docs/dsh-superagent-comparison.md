@@ -88,11 +88,11 @@ survived the move: scope and delivery.
 
 | | dsh-superagent | superagent |
 | --- | --- | --- |
-| Workspace | A per-ticket directory from `<stateDir>/work/<name>`; the operator supplies a `prepare` command, such as `git worktree add` | A git worktree per ticket at `<stateDir>/work/<ticketId>`, on a branch named from the title. The code creates it |
+| Workspace | A per-ticket directory from `<stateDir>/work/<name>`; the operator supplies a `prepare` command, such as `git worktree add` | A git worktree per ticket at `<stateDir>/work/<ticketId>`, on a branch named from the title. The code creates it and removes it, after pushing, when the ticket ends |
 | Isolation | The operator's OS user, `danger-full-access`; the docs say to use a separate OS account | The operator's user, with `worker-bin` shims for `gh` and `lark-cli`, an optional `blockedCommands` list, and a prepared git config |
 | Turn cap | 30 min per turn after the turn ends, with background jobs | `executor.timeoutMinutes` (default 60) |
 | Concurrency | `executor.maxWorkers` (default 3), plus a slot for people | `executor.maxWorkers` (default 1); the tickets over the limit wait and start as a turn ends |
-| Reports | `progress`, `waiting`, `ready`, `blocked`, `failed`, `dropped`; PRs bind with a tool | `ready`, `blocked`, `failed`, in `.superagent/report.json`; a turn log goes to `.superagent/log.md` |
+| Reports | `progress`, `waiting`, `ready`, `blocked`, `failed`, `dropped`; PRs bind with a tool | `ready`, `blocked`, `failed`, in `.superagent/report.json`; the turn log goes to `<stateDir>/tickets/<ticket>/log.md` |
 | Questions | A structured `human_action`, relayed as an `attention` reply | A `question` field on a `blocked` report |
 | Stop and retry | Panel or a person's message; retry runs a new Assignment in the same Session | `stopTicket` and `retryTicket` exist in the Engine; the CLI does not expose them yet |
 | Merge | Auto-merge is prompt-governed and opt-in | The prompt says a person merges |

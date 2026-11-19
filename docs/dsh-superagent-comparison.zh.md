@@ -84,11 +84,11 @@ DSH 分两个角色，是因为主会话要用很多工具做判断，worker 在
 
 | | dsh-superagent | superagent |
 | --- | --- | --- |
-| 工作目录 | 每张 ticket 一个目录，在 `<stateDir>/work/<name>`，由你提供 `prepare` 命令，比如 `git worktree add` | 每张 ticket 一个 git worktree，在 `<stateDir>/work/<ticketId>`，分支名由标题生成，代码自己创建 |
+| 工作目录 | 每张 ticket 一个目录，在 `<stateDir>/work/<name>`，由你提供 `prepare` 命令，比如 `git worktree add` | 每张 ticket 一个 git worktree，在 `<stateDir>/work/<ticketId>`，分支名由标题生成，代码自己创建；ticket 结束时先推送再删除 |
 | 隔离 | 以你的系统用户身份运行，`danger-full-access`；文档建议另开一个系统账户 | 以你的用户身份运行，带 `worker-bin` 里的 `gh` 和 `lark-cli` 包装脚本、可选的 `blockedCommands` 禁用列表和预备好的 git 配置 |
 | 单轮上限 | 一轮结束后后台任务最多再跑 30 分钟 | `executor.timeoutMinutes`，默认 60 |
 | 并发 | `executor.maxWorkers`，默认 3，另给人发的消息留一个位置 | `executor.maxWorkers`，默认 1；超出上限的 ticket 排队，等某一轮结束后再启动 |
-| 回报 | `progress`、`waiting`、`ready`、`blocked`、`failed`、`dropped`，PR 通过工具绑定 | `ready`、`blocked`、`failed`，写在 `.superagent/report.json`；完整日志在 `.superagent/log.md` |
+| 回报 | `progress`、`waiting`、`ready`、`blocked`、`failed`、`dropped`，PR 通过工具绑定 | `ready`、`blocked`、`failed`，写在 `.superagent/report.json`；完整日志在 `<stateDir>/tickets/<ticket>/log.md` |
 | 提问 | 用结构化的 `human_action`，由主会话以 `attention` 回复转达 | `blocked` 回报里带 `question` 字段 |
 | 停止与重试 | 面板操作，或人说一句停止；重试是在同一会话、目录、分支和 PR 上新建 Assignment | Engine 里有 `stopTicket` 和 `retryTicket`，CLI 还没开放 |
 | 合并 | 自动合并在 prompt 里约定，需显式开启 | prompt 规定由人合并 |

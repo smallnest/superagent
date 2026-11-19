@@ -210,6 +210,8 @@ echo "DECISION: MERGE"
       signal: new AbortController().signal,
       log: logFn,
       once: true,
+      // Wait for the turn and the cleanup that follows it: the test's temp directory is removed right after.
+      finish: true,
     })
 
     const deadline = Date.now() + 10_000

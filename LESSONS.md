@@ -172,6 +172,14 @@ Read this before changing code. Add to it before you finish.
   branch would split the work, and a whole-branch merge would carry unrelated work.
 - Seen 1× (2026-11-17).
 
+**A worktree's end takes its work out first.**
+- 2026-11-19: `removeWorktree()` existed but only ran when creating a worktree failed, so ended tickets kept every
+  worktree and branch; and the run log lived only in the worktree that cleanup would delete.
+- Before removing: save uncommitted work as `state/tickets/<id>/worktree.patch`, push commits the remote lacks, and
+  keep the worktree when the push fails. `tests/cleanup.test.ts` proves the push, the patch and the failed-push case;
+  `tests/poll.test.ts` proves a ticket's worktree is gone after it ends.
+- Seen 1× (2026-11-19).
+
 ## Verification
 
 **A test that starts a real agent is opt-in, and says what it costs.**

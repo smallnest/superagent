@@ -3,7 +3,7 @@
  * takes a message from the event stream to a reply in the same chat.
  */
 import { execFileSync } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -76,6 +76,7 @@ esac
   await writeFile(join(bin, 'fake-agent'), `#!/bin/sh
 cat > /dev/null
 mkdir -p .superagent
+git rev-parse --abbrev-ref HEAD > ${JSON.stringify(join(bin, 'branch.txt'))} 2>/dev/null || true
 printf '{"summary":"Fixed the heading.","state":"ready","prs":[]}' > .superagent/report.json
 `, { mode: 0o755 })
   await chmod(join(bin, 'lark-cli'), 0o755)
@@ -90,7 +91,8 @@ const poll = async (dir: string, signal: AbortSignal): Promise<void> => {
   const settings = await readSettings(join(dir, 'settings.yaml'))
   const repo = new FileRepositories(settings.stateDir)
   await repo.open()
-  await runLoop({ settings, repo, signal, once: true, log: () => {} })
+  // Wait for the turn and its cleanup, so the next round sees a finished ticket rather than one a new process recovers.
+  await runLoop({ settings, repo, signal, once: true, log: () => {}, finish: true })
 }
 
 describe('a Feishu round', () => {
@@ -138,10 +140,24 @@ assess:
     const listed = tickets.tickets.list()
     expect(listed).toHaveLength(1)
     expect(listed[0]!.mandate.actor.id).toBe('ou_alice')
+    // The turn records the branch it worked on, because the worktree is removed when the ticket ends.
+    const branchFile = join(bin, 'branch.txt')
+    await until(async () => (await readFile(branchFile, 'utf8').catch(() => '')).trim().length > 0, 10_000)
+    expect((await readFile(branchFile, 'utf8')).trim()).toBe(ticketBranch('agent/', listed[0]!.title, listed[0]!.id))
+    // The ticket ended, so its worktree is gone; its log stays beside the ticket.
     const work = join(stateDir, 'work', listed[0]!.id)
-    expect(execFileSync('git', ['-C', work, 'branch', '--show-current'], { encoding: 'utf8' }).trim())
-      .toBe(ticketBranch('agent/', listed[0]!.title, listed[0]!.id))
+    await until(async () => !(await stat(work).then(() => true, () => false)), 20_000)
+    expect(await readFile(join(stateDir, 'tickets', listed[0]!.id, 'log.md'), 'utf8')).toContain('Fixed the heading.')
     expect(await reply()).not.toBe('')
 
   }, 90_000)
 })
+
+/** Waits for `check` to hold, failing the test after `ms`. */
+async function until(check: () => Promise<boolean>, ms = 10_000): Promise<void> {
+  const deadline = Date.now() + ms
+  while (!await check()) {
+    if (Date.now() > deadline) throw new Error(`The condition did not hold within ${ms} ms`)
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+}

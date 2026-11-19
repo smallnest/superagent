@@ -27,10 +27,13 @@ State is plain JSON under `stateDir`, so `ls` and `cat` answer more than the com
 | --- | --- |
 | `state/tickets/<id>/ticket.json` | one ticket: its mandate, assignments, attention and outcome |
 | `state/tickets/<id>/log.md` | what the agent did for that ticket |
-| `stateDir/work/<id>/.superagent/log.md` | the prompt, the agent's output and its report, kept beside the worktree |
+| `state/tickets/<id>/worktree.patch` | uncommitted work saved before the ticket's worktree was removed |
 | `state/threads/<key>.json` | one conversation, with the triggers waiting for an assessment |
 | `state/decisions/<id>.json` | why a request was accepted or ignored |
 | `state/triggers/<thread>/<at>-<id>.json` | every message a Source received |
+
+A worktree is temporary. When a ticket ends, its branch is pushed if the remote lacks its commits, uncommitted work is
+saved as `worktree.patch`, and the worktree and local branch are removed. If the push fails, both stay for the next round.
 
 ## Choose the coding agent
 

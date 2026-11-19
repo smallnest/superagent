@@ -50,6 +50,7 @@ turn to end, and prints the report the agent left in `.superagent/report.json`.
 3. The executor prepares a worktree and starts the configured agent in it with the composed prompt.
 4. The agent works, and writes `.superagent/report.json` before it stops.
 5. The report is delivered back to the conversation the request came from.
+6. When the ticket ends, its branch is pushed if the remote lacks its commits, any uncommitted work is saved as a patch, and the worktree and local branch are removed.
 
 ## The agent contract
 
@@ -82,7 +83,10 @@ superagent poll . --once   # one round, for a cron job or a test
 
 A round reads the agent account's GitHub notifications, keeps the ones for `github.repository` from a login on
 `github.allowed`, builds a Trigger for each mention, and accepts it as a ticket. The ticket runs on
-`executor.agent`; its report is written under `stateDir/work/<ticket>/.superagent/log.md`.
+`executor.agent`; its prompt, output and report are written under `stateDir/tickets/<ticket>/log.md`. When the ticket
+ends, the executor pushes its branch to `origin` if it has commits the remote does not have, saves any uncommitted
+work as `state/tickets/<ticket>/worktree.patch`, and removes the worktree and local branch. A failed push keeps the
+worktree and branch for the next round instead of deleting the only copy.
 
 A message in a chat the bot reads that names no one is assessed by one `claude -p` call per message, against the
 `policy.rules` in `settings.yaml`. In `observe` mode the verdict is recorded and no ticket starts; `auto` accepts the
@@ -157,7 +161,8 @@ for how superagent incorporates the five core primitives from Anthropic's [*"Bui
 
 Done and tested: the domain, file-backed state, the settings file, three agent runners (verified against the real CLIs),
 the GitHub notification poller, the GitLab Source (to-dos, merge request review and merge), the Feishu Source, worktree
-creation per ticket, the round loop, and delivery of the agent's report back to the conversation. The Feishu path is
+creation and removal per ticket, the round loop, and delivery of the agent's report back to the conversation. Removal
+pushes the branch first when the remote lacks its commits and keeps the worktree when that push fails. The Feishu path is
 proven with a stand-in `lark-cli` and once end to end against a real Feishu bot; the GitLab path is proven with a
 stand-in `glab` and on GitLab 19.4.3 (`gitlab.sitinai.com`): an issue to-do became a ticket and a note, and a merge
 request was reviewed, squash-merged and answered.

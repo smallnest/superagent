@@ -10,6 +10,8 @@
  *   threads/<threadKey>.json
  *   tickets/<id>/ticket.json
  *   tickets/<id>/log.md
+ *   tickets/<id>/worktree.json
+ *   tickets/<id>/worktree.patch
  *   decisions/<id>.json
  *   outbox/<id>.json
  *   meta/<key>.json
